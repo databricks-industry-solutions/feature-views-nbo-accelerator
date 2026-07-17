@@ -21,7 +21,7 @@ variables:
     default: nbo-vs-endpoint
   kafka_connection:
     description: Existing Unity Catalog Kafka connection name (holds bootstrap + IAM auth)
-    default: ""
+    default: msk_kafka
   kafka_topic:
     description: Kafka topic for in-session events
     default: nbo-session-events

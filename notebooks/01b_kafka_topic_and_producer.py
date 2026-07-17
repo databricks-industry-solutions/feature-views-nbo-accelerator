@@ -18,14 +18,15 @@
 # MAGIC 3. Produce synthetic in-session events continuously (or a bounded batch).
 
 # COMMAND ----------
-# MAGIC %pip install kafka-python confluent-kafka
+# MAGIC %pip install confluent-kafka aws-msk-iam-sasl-signer-python
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "nbo_accelerator")
 dbutils.widgets.text("schema", "main")
-dbutils.widgets.text("kafka_connection", "", "UC Kafka connection name")
+dbutils.widgets.text("kafka_connection", "msk_kafka", "UC Kafka connection name")
 dbutils.widgets.text("topic", "nbo-session-events")
+dbutils.widgets.text("region", "", "AWS region (blank = derive from bootstrap host)")
 dbutils.widgets.text("mode", "bounded", "bounded | continuous")
 dbutils.widgets.text("num_events", "100000")
 dbutils.widgets.text("events_per_sec", "500")
@@ -62,29 +63,35 @@ SECURITY_PROTOCOL = opts.get("security.protocol", "SASL_SSL")
 print("bootstrap:", BOOTSTRAP, "| security.protocol:", SECURITY_PROTOCOL)
 
 # COMMAND ----------
-# MAGIC %md ### Build client auth from the connection
-# MAGIC The connection is backed by an IAM role (MSK IAM) or SASL/mTLS. For **MSK + IAM** use
-# MAGIC the `aws-msk-iam-sasl-signer` mechanism; the cluster/job runs under the connection's role.
-# MAGIC For SASL_SSL username/password, pull those from the connection options / a secret scope.
-#
-# NOTE: finalize this block once the option keys are confirmed from the cell above.
+# MAGIC %md ### Build client auth from the connection (AWS MSK + IAM)
+# MAGIC `msk_kafka` is an **MSK IAM** connection — auth is `SASL_SSL` + `OAUTHBEARER`, with tokens
+# MAGIC minted by the AWS MSK IAM signer using the connection's underlying IAM role. The job/cluster
+# MAGIC assumes that role, so no static credentials live in the notebook.
+# MAGIC
+# MAGIC The signer needs the region; derive it from the bootstrap host
+# MAGIC (e.g. `...kafka.us-west-2.amazonaws.com:9098`) or set the `region` widget.
+import re
+
+def _derive_region(bootstrap: str) -> str:
+    m = re.search(r"\.([a-z]{2}-[a-z]+-\d)\.amazonaws\.com", bootstrap or "")
+    return m.group(1) if m else "us-west-2"
+
+REGION = dbutils.widgets.get("region") or _derive_region(BOOTSTRAP)
+print("MSK region:", REGION)
+
+def _oauth_token_provider(_config):
+    # Returns (token, expiry_ms) for confluent-kafka's OAUTHBEARER callback.
+    from aws_msk_iam_sasl_signer import MSKAuthTokenProvider
+    token, expiry_ms = MSKAuthTokenProvider.generate_auth_token(REGION)
+    return token, expiry_ms / 1000.0
+
 def client_config():
-    cfg = {
+    return {
         "bootstrap.servers": BOOTSTRAP,
-        "security.protocol": SECURITY_PROTOCOL,
+        "security.protocol": "SASL_SSL",
+        "sasl.mechanism": "OAUTHBEARER",
+        "oauth_cb": _oauth_token_provider,
     }
-    # --- MSK IAM (common for AWS FE workspaces) ---
-    # cfg.update({
-    #     "sasl.mechanism": "OAUTHBEARER",
-    #     "sasl.oauthbearer.method": "aws_msk_iam",  # via confluent-kafka MSK IAM helper
-    # })
-    # --- OR SASL_SSL user/pass ---
-    # cfg.update({
-    #     "sasl.mechanism": "PLAIN",
-    #     "sasl.username": opts["sasl.username"],
-    #     "sasl.password": dbutils.secrets.get("nbo", "kafka_password"),
-    # })
-    return cfg
 
 # COMMAND ----------
 # MAGIC %md ## 2 · Create the topic (idempotent)
