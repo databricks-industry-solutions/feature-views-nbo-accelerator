@@ -1,0 +1,11 @@
+# Databricks App: real-time NBO demo UI + live latency meter.
+command: ["python", "app.py"]
+env:
+  - name: RANKER_ENDPOINT
+    value: "nbo-ranker"
+  - name: VS_ENDPOINT
+    value: "nbo-vs-endpoint"
+  - name: CATALOG
+    value: "nbo_accelerator"
+  - name: SCHEMA
+    value: "main"

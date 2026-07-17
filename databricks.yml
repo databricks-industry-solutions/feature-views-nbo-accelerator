@@ -1,0 +1,43 @@
+# Databricks Asset Bundle for the FSI Next-Best-Offer accelerator.
+# Deploy with:  databricks bundle deploy --target dev
+bundle:
+  name: feature-views-nbo-accelerator
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog (must use standard storage for streaming Feature Views)
+    default: nbo_accelerator
+  schema:
+    description: Schema for all accelerator assets
+    default: main
+  online_store_name:
+    description: Lakebase online store name (DNS-compliant — lowercase, hyphens, no underscores)
+    default: nbo-online-store
+  vector_search_endpoint:
+    description: Vector Search endpoint for offer candidate retrieval
+    default: nbo-vs-endpoint
+  kafka_connection:
+    description: Existing Unity Catalog Kafka connection name (holds bootstrap + IAM auth)
+    default: ""
+  kafka_topic:
+    description: Kafka topic for in-session events
+    default: nbo-session-events
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://fe-vm-ttan-vm.cloud.databricks.com
+    variables:
+      catalog: nbo_accelerator_dev
+
+  prod:
+    mode: production
+    workspace:
+      host: https://fe-vm-ttan-vm.cloud.databricks.com
+    variables:
+      catalog: nbo_accelerator

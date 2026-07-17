@@ -1,0 +1,6 @@
+databricks-feature-engineering>=0.16.0
+mlflow>=3.0
+lightgbm
+optuna
+databricks-sdk
+databricks-vectorsearch
