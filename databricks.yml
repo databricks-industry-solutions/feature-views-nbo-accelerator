@@ -20,7 +20,10 @@ variables:
     description: Vector Search endpoint for offer candidate retrieval
     default: nbo-vs-endpoint
   kafka_connection:
-    description: Existing Unity Catalog Kafka connection name (holds bootstrap + IAM auth)
+    description: Existing Unity Catalog Kafka connection name (holds bootstrap servers)
+    default: msk_kafka
+  service_credential:
+    description: UC service credential for MSK IAM auth (databricks.serviceCredential)
     default: msk_kafka
   kafka_topic:
     description: Kafka topic for in-session events

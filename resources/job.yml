@@ -29,6 +29,7 @@ resources:
               catalog: ${var.catalog}
               schema: ${var.schema}
               kafka_connection: ${var.kafka_connection}
+              service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
               mode: bounded
 
