@@ -1,52 +1,80 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 03 · Materialize Features
-# MAGIC Provision serverless pipelines to write features to offline Delta (training) and
-# MAGIC online Lakebase (serving). Materialization strategy differs by feature type.
+# MAGIC Provision serverless declarative pipelines to write features to **offline Delta**
+# MAGIC (training) and **online Lakebase** (serving). Materialization strategy differs by
+# MAGIC feature type. Features were registered in notebook 02, so here we **fetch** them with
+# MAGIC `get_feature` (re-creating raises `AlreadyExists`).
+# MAGIC
+# MAGIC **Verified end-to-end on serverless (`databricks-feature-engineering>=0.16.0`).**
+# MAGIC
+# MAGIC Gotchas learned the hard way:
+# MAGIC - Offline and online destinations **must differ** — use distinct `table_name_prefix`
+# MAGIC   (here `nbo_off` vs `nbo_on`), even within the same catalog/schema.
+# MAGIC - Aggregation features → `CronSchedule` (offline+online); `ColumnSelection` → `TableTrigger`
+# MAGIC   (online-only). Mixing a ColumnSelection into a CronSchedule call is rejected.
+# MAGIC - Backfill pipelines run async; materialized Delta tables (`nbo_off_*`, `nbo_on_*`)
+# MAGIC   appear once the first backfill completes.
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "nbo_accelerator")
-dbutils.widgets.text("schema", "main")
+# MAGIC %pip install "databricks-feature-engineering>=0.16.0"
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+dbutils.widgets.text("catalog", "fins-industry-solutions")
+dbutils.widgets.text("schema", "nbo")
 dbutils.widgets.text("online_store_name", "nbo-online-store")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
-online_store_name = dbutils.widgets.get("online_store_name")
+osn = dbutils.widgets.get("online_store_name")
 
-from databricks.feature_engineering import (
-    FeatureEngineeringClient, OfflineStoreConfig, OnlineStoreConfig,
-    CronSchedule, TableTrigger, StreamingMode,
+from databricks.feature_engineering import FeatureEngineeringClient
+from databricks.feature_engineering.entities import (
+    OfflineStoreConfig, OnlineStoreConfig, CronSchedule, TableTrigger,
 )
 fe = FeatureEngineeringClient()
-# from notebook 02: avg_balance_30d, spend_90d, loyalty_tier, risk_band, clicks_10m
 
 # COMMAND ----------
-# MAGIC %md ## Aggregation features → offline Delta + online (needs CronSchedule + backfill)
-# fe.materialize_features(
-#     features=[avg_balance_30d, spend_90d],
-#     offline_config=OfflineStoreConfig(catalog_name=catalog, schema_name=schema,
-#                                        table_name_prefix="features"),
-#     online_config=OnlineStoreConfig(catalog_name=catalog, schema_name=schema,
-#                                     online_store_name=online_store_name),
-#     trigger=CronSchedule(quartz_cron_expression="0 0 0 * * ?", timezone_id="UTC"),
-# )
+# MAGIC %md ## Fetch the features registered in notebook 02
+def gf(name):
+    return fe.get_feature(full_name=f"{catalog}.{schema}.{name}")
+
+agg_features = [gf("cust_avg_balance_30d"), gf("cust_spend_90d"), gf("cust_txn_count_7d")]
+attr_features = [gf("cust_loyalty_tier"), gf("cust_risk_band")]
+
+# COMMAND ----------
+# MAGIC %md ## Aggregation features → offline Delta + online Lakebase (CronSchedule + backfill)
+fe.materialize_features(
+    features=agg_features,
+    offline_config=OfflineStoreConfig(catalog, schema, "nbo_off"),
+    online_config=OnlineStoreConfig(catalog, schema, "nbo_on", osn),
+    trigger=CronSchedule(quartz_cron_expression="0 0 0 * * ?", timezone_id="UTC"),
+)
 
 # COMMAND ----------
 # MAGIC %md ## ColumnSelection features → online-only (TableTrigger)
-# fe.materialize_features(
-#     features=[loyalty_tier, risk_band],
-#     online_config=OnlineStoreConfig(catalog_name=catalog, schema_name=schema,
-#                                     online_store_name=online_store_name),
-#     trigger=TableTrigger(),
-# )
+fe.materialize_features(
+    features=attr_features,
+    online_config=OnlineStoreConfig(catalog, schema, "nbo_on", osn),
+    trigger=TableTrigger(),
+)
 
 # COMMAND ----------
-# MAGIC %md ## Streaming features → online-only (StreamingMode)
-# MAGIC Auto-maintains a Delta ingestion table (also feeds point-in-time training in nb 04).
-# MAGIC Starts at latest Kafka offset; use StreamBackfillSource to replay history.
-# fe.materialize_features(
-#     features=[clicks_10m],
-#     online_config=OnlineStoreConfig(catalog_name=catalog, schema_name=schema,
-#                                     online_store_name=online_store_name),
-#     trigger=StreamingMode(),
-# )
-print("TODO: uncomment materialization calls once features are registered")
+# MAGIC %md ## Inspect the provisioned pipelines
+for f in ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
+          "cust_loyalty_tier", "cust_risk_band"]:
+    for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.{f}"):
+        print(f"{f:24s} online={m.is_online}  table={m.table_name}")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Streaming features (RollingWindow over MSK) — online-only via `StreamingMode`
+# MAGIC After registering the Kafka stream (notebook 01b + 02 streaming section):
+# MAGIC ```python
+# MAGIC from databricks.feature_engineering.entities import StreamingMode
+# MAGIC fe.materialize_features(
+# MAGIC     features=[clicks_10m],
+# MAGIC     online_config=OnlineStoreConfig(catalog, schema, "nbo_stream", osn),
+# MAGIC     trigger=StreamingMode(),
+# MAGIC )
+# MAGIC ```

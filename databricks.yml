@@ -8,11 +8,11 @@ include:
 
 variables:
   catalog:
-    description: Unity Catalog catalog (must use standard storage for streaming Feature Views)
-    default: nbo_accelerator
+    description: Unity Catalog catalog (standard storage — required for streaming Feature Views)
+    default: fins-industry-solutions
   schema:
     description: Schema for all accelerator assets
-    default: main
+    default: nbo
   online_store_name:
     description: Lakebase online store name (DNS-compliant — lowercase, hyphens, no underscores)
     default: nbo-online-store
@@ -35,12 +35,8 @@ targets:
     default: true
     workspace:
       host: https://fe-vm-ttan-vm.cloud.databricks.com
-    variables:
-      catalog: nbo_accelerator_dev
 
   prod:
     mode: production
     workspace:
       host: https://fe-vm-ttan-vm.cloud.databricks.com
-    variables:
-      catalog: nbo_accelerator
