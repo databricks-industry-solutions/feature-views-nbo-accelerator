@@ -1,0 +1,3 @@
+# Streamlit, databricks-sdk, and databricks-sql-connector are pre-installed in the
+# Apps runtime. databricks-vectorsearch is not — add it for candidate retrieval.
+databricks-vectorsearch

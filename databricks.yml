@@ -19,6 +19,9 @@ variables:
   vector_search_endpoint:
     description: Vector Search endpoint for offer candidate retrieval
     default: nbo-vs-endpoint
+  warehouse_id:
+    description: SQL warehouse id for the app and dashboard
+    default: ""
   kafka_connection:
     description: Existing Unity Catalog Kafka connection name (holds bootstrap servers)
     default: msk_kafka

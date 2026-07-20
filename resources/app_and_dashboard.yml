@@ -1,0 +1,24 @@
+# App + dashboard resources for the accelerator.
+resources:
+  apps:
+    nbo_recommender:
+      name: nbo-recommender
+      description: "Real-time Next-Best-Offer demo with a live sub-300ms latency meter."
+      source_code_path: ../apps/recommender-app
+      resources:
+        - name: sql-warehouse
+          description: "SQL warehouse for reading offers/customers and latency_results."
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: serving-endpoint
+          description: "nbo-ranker ranking model endpoint."
+          serving_endpoint:
+            name: nbo-ranker
+            permission: CAN_QUERY
+
+  dashboards:
+    nbo_dashboard:
+      display_name: "NBO Feature Views Accelerator"
+      file_path: ../dashboards/nbo_dashboard.json
+      warehouse_id: ${var.warehouse_id}
