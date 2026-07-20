@@ -36,3 +36,10 @@ databricks apps deploy nbo-recommender \
 ```
 Then add the SQL warehouse + serving endpoint resources in the app's Configure tab
 and grant the app's service principal `SELECT` on the catalog and `Can Query` on the endpoint.
+
+## Deployed instance
+- **Live on `fe-vm-ttan-vm`**: `https://nbo-recommender-2669921646648788.aws.databricksapps.com`
+- Resources wired: `sql-warehouse` → warehouse `2a0b73493fe19b04` (CAN_USE),
+  `serving-endpoint` → `nbo-ranker` (CAN_QUERY).
+- App service principal granted `USE_CATALOG`/`USE_SCHEMA`/`SELECT` on
+  `fins-industry-solutions` and `SELECT` on `offers_index`.
