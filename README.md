@@ -43,16 +43,21 @@ The **same** `Feature` objects that materialize to the online store also feed
 
 ## Latency budget (the headline claim)
 
-| Stage | Target | Notes |
-|---|---|---|
-| Candidate retrieval (Vector Search ANN) | 30–50ms | top-N candidate offers |
-| Online feature lookup (Lakebase) | 10–30ms | **read** latency (distinct from freshness) |
-| Ranking model inference | 20–60ms | LightGBM ranker on Model Serving |
-| Orchestration + network | 20–40ms | app → endpoints |
-| **End-to-end p50 / p95** | **< 300ms** | measured via load test, not assumed |
+**Measured** on `fe-vm-ttan-vm` (serverless, N=100 after warmup) — see notebook 06:
+
+| Stage | p50 | p95 | p99 |
+|---|---|---|---|
+| Candidate retrieval (Vector Search ANN) | ~145ms | ~205ms | ~380ms |
+| Ranking model inference (Model Serving) | ~30ms | ~55ms | ~290ms |
+| **End-to-end** | **~175ms** | **~235ms** | ~660ms |
+
+**p50 and p95 land under the 300ms budget** (mean ~190ms). p99 shows occasional tail spikes,
+driven by the managed-embedding FMAPI hop in retrieval (query embedded server-side per request)
+plus rare serving cold-slots. Tail-tightening options: embed queries client-side and pass
+`query_vector`, use a provisioned-throughput embedding endpoint, or disable scale-to-zero for the demo.
 
 > **Honesty note:** The `~200ms p99` figure from the Feature Views launch is *event-to-online-
-> availability* (freshness). Our `<300ms` budget is the *serving read + retrieve + rank* path.
+> availability* (freshness). Our `<300ms` budget is the *serving retrieve + rank* path.
 > We measure and publish **both** numbers separately.
 
 ## What's inside
