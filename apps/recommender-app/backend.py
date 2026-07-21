@@ -12,6 +12,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
+from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
 from databricks import sql
 
@@ -49,8 +50,10 @@ class Recommendation:
 
 class Backend:
     def __init__(self) -> None:
-        self._cfg = Config()
-        self._vsc = None  # lazily created; import kept local so app boots without it
+        # One SDK client, authenticated as the app's service principal (OAuth). Used for
+        # embeddings, Vector Search, and the route-optimized ranker — no PAT/SP-secret needed.
+        self._w = WorkspaceClient()
+        self._cfg = self._w.config
 
     # --- connections -------------------------------------------------------
     def _sql_conn(self):
@@ -59,12 +62,6 @@ class Backend:
             http_path=f"/sql/1.0/warehouses/{os.environ['DATABRICKS_WAREHOUSE_ID']}",
             credentials_provider=lambda: self._cfg.authenticate,
         )
-
-    def _vs_index(self):
-        if self._vsc is None:
-            from databricks.vector_search.client import VectorSearchClient
-            self._vsc = VectorSearchClient(disable_notice=True)
-        return self._vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=VS_INDEX)
 
     # --- reads -------------------------------------------------------------
     def sample_customers(self, n: int = 25) -> list[dict]:
@@ -85,27 +82,26 @@ class Backend:
     def _embed(self, text: str) -> list[float]:
         """Embed the session context client-side so retrieval can use query_vector
         (avoids the per-request server-side embedding hop — ~50ms cheaper)."""
-        from databricks.sdk import WorkspaceClient
-        w = WorkspaceClient()
-        e = w.serving_endpoints.query(name="databricks-gte-large-en", input=[text]).data[0]
+        e = self._w.serving_endpoints.query(
+            name="databricks-gte-large-en", input=[text]).data[0]
         return e.embedding if hasattr(e, "embedding") else e["embedding"]
 
     # --- two-stage recommend ----------------------------------------------
     def recommend(self, customer: dict, context: str, k: int = 10) -> Recommendation:
-        from databricks.sdk import WorkspaceClient
-        w = WorkspaceClient()
         timing = Timing()
 
         # Stage 1 — candidate retrieval (Vector Search ANN over offer embeddings).
+        # Query the index through the SDK (auths as the app SP) — no separate VS client / PAT.
         # query_vector avoids the server-side FMAPI embed hop; embed once, up front.
         vec = self._embed(context)
         t0 = time.perf_counter()
-        res = self._vs_index().similarity_search(
-            query_vector=vec,
+        res = self._w.vector_search_indexes.query_index(
+            index_name=VS_INDEX,
             columns=["offer_id", "product_category", "offer_text"],
+            query_vector=vec,
             num_results=k,
         )
-        candidates = res.get("result", {}).get("data_array", [])
+        candidates = res.result.data_array if res.result else []
         timing.retrieval_ms = (time.perf_counter() - t0) * 1000
 
         # Stage 2 — ranking on the route-optimized endpoint. Route-optimized endpoints must be
@@ -118,7 +114,7 @@ class Backend:
         } for c in candidates]
 
         t1 = time.perf_counter()
-        preds = w.serving_endpoints_data_plane.query(
+        preds = self._w.serving_endpoints_data_plane.query(
             name=RANKER_ENDPOINT, dataframe_records=recs
         ).predictions
         timing.ranking_ms = (time.perf_counter() - t1) * 1000
