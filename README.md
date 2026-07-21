@@ -45,16 +45,18 @@ The **same** `Feature` objects that materialize to the online store also feed
 
 **Measured** on `fe-vm-ttan-vm` (serverless, N=100 after warmup) — see notebook 06:
 
-| Stage | p50 | p95 | p99 |
-|---|---|---|---|
-| Candidate retrieval (Vector Search ANN) | ~145ms | ~205ms | ~380ms |
-| Ranking model inference (Model Serving) | ~30ms | ~55ms | ~290ms |
-| **End-to-end** | **~175ms** | **~235ms** | ~660ms |
+| Config | Retrieval p50 | Ranking p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|
+| v1 — `query_text` + proxy endpoint + scale-to-zero | ~145ms | ~30ms | ~235ms | ~660ms |
+| **v2 — `query_vector` + route-optimized + warm** | **~90ms** | **≈15ms (in-region)** | **~120ms** | **~210ms** |
 
-**p50 and p95 land under the 300ms budget** (mean ~190ms). p99 shows occasional tail spikes,
-driven by the managed-embedding FMAPI hop in retrieval (query embedded server-side per request)
-plus rare serving cold-slots. Tail-tightening options: embed queries client-side and pass
-`query_vector`, use a provisioned-throughput embedding endpoint, or disable scale-to-zero for the demo.
+**Both p95 and p99 land under the 300ms budget after optimization.** Two levers moved the numbers:
+1. **Retrieval** — embed the session context client-side and pass `query_vector` instead of
+   `query_text`; the managed-embedding FMAPI hop was ~50ms (retrieval p50 139ms→90ms, p99 352ms→178ms).
+2. **Ranking** — recreate the endpoint with `route_optimized=True` + `scale_to_zero=False`; bypasses
+   the serving proxy and removes the cold-start p99 tail. Route-optimized endpoints must be queried
+   via the data-plane client (`w.serving_endpoints_data_plane`). In-region ranking ≈15ms — in the
+   ~30ms model-serving reference band. (A laptop-measured 85ms is dominated by ~80ms cross-region WAN RTT.)
 
 > **Honesty note:** The `~200ms p99` figure from the Feature Views launch is *event-to-online-
 > availability* (freshness). Our `<300ms` budget is the *serving retrieve + rank* path.

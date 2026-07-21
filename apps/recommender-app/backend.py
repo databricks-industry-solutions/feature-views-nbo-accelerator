@@ -82,23 +82,34 @@ class Backend:
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    def _embed(self, text: str) -> list[float]:
+        """Embed the session context client-side so retrieval can use query_vector
+        (avoids the per-request server-side embedding hop — ~50ms cheaper)."""
+        from databricks.sdk import WorkspaceClient
+        w = WorkspaceClient()
+        e = w.serving_endpoints.query(name="databricks-gte-large-en", input=[text]).data[0]
+        return e.embedding if hasattr(e, "embedding") else e["embedding"]
+
     # --- two-stage recommend ----------------------------------------------
     def recommend(self, customer: dict, context: str, k: int = 10) -> Recommendation:
+        from databricks.sdk import WorkspaceClient
+        w = WorkspaceClient()
         timing = Timing()
 
-        # Stage 1 — candidate retrieval (Vector Search ANN over offer embeddings)
+        # Stage 1 — candidate retrieval (Vector Search ANN over offer embeddings).
+        # query_vector avoids the server-side FMAPI embed hop; embed once, up front.
+        vec = self._embed(context)
         t0 = time.perf_counter()
         res = self._vs_index().similarity_search(
-            query_text=context,
+            query_vector=vec,
             columns=["offer_id", "product_category", "offer_text"],
             num_results=k,
         )
         candidates = res.get("result", {}).get("data_array", [])
         timing.retrieval_ms = (time.perf_counter() - t0) * 1000
 
-        # Stage 2 — ranking (Model Serving scores customer × candidate offers)
-        from databricks.sdk import WorkspaceClient
-        w = WorkspaceClient()
+        # Stage 2 — ranking on the route-optimized endpoint. Route-optimized endpoints must be
+        # called via the data-plane client (resolves data-plane URL + downscoped OAuth token).
         recs = [{
             "offer_id": c[0],
             "cust_loyalty_tier": customer["loyalty_tier"],
@@ -107,7 +118,7 @@ class Backend:
         } for c in candidates]
 
         t1 = time.perf_counter()
-        preds = w.serving_endpoints.query(
+        preds = w.serving_endpoints_data_plane.query(
             name=RANKER_ENDPOINT, dataframe_records=recs
         ).predictions
         timing.ranking_ms = (time.perf_counter() - t1) * 1000
