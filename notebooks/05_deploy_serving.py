@@ -83,10 +83,14 @@ feats = [fe.get_feature(full_name=f"{catalog}.{schema}.{n}") for n in
 labels = spark.table(q(f"{catalog}.{schema}.labels")).withColumn("updated_at", F.col("ts"))
 ts = fe.create_training_set(df=labels, features=feats, label="accepted",
                             exclude_columns=["record_id", "customer_id", "ts", "updated_at"])
-tdf = ts.load_df().toPandas()
+# Join REAL offer attributes so the ranker can differentiate offers for a given customer.
+# Without them the only varying input per request is offer_id and scores saturate per profile.
+offers = spark.table(q(f"{catalog}.{schema}.offers")).select(
+    "offer_id", "product_category", "base_reward", "tier_requirement")
+tdf = ts.load_df().join(offers, on="offer_id", how="left").toPandas()
 
-CAT = ["offer_id", "cust_loyalty_tier", "cust_risk_band"]
-NUM = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d"]
+CAT = ["offer_id", "product_category", "cust_loyalty_tier", "cust_risk_band"]
+NUM = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d", "base_reward", "tier_requirement"]
 X = tdf[CAT + NUM].copy()
 for c in CAT:
     X[c] = X[c].astype(str)

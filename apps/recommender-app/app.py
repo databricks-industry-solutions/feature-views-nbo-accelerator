@@ -106,13 +106,31 @@ with right:
             st.warning(f"⚠️ Served in {rec.timing.e2e_ms:.0f} ms — over the {BUDGET_MS} ms budget "
                        "(likely a cold slot; retry).")
 
+        # Raw acceptance probabilities often saturate near 1.0 for strong profiles, so a
+        # 0–1 bar looks flat. Show explicit rank + a *relative* bar (min-max normalized
+        # within this result set) so the ordering is legible, with the raw score alongside.
+        scores = [o["score"] for o in rec.offers]
+        lo, hi = min(scores), max(scores)
+        span = (hi - lo) or 1.0
+        rows = [{
+            "Rank": i + 1,
+            "Offer": o["offer_id"],
+            "Category": o["product_category"],
+            "Relative": (o["score"] - lo) / span,
+            "Score": round(o["score"], 4),
+            "Description": o["offer_text"],
+        } for i, o in enumerate(rec.offers)]
+
         st.dataframe(
-            [{"Offer": o["offer_id"], "Category": o["product_category"],
-              "Score": round(o["score"], 4), "Description": o["offer_text"]}
-             for o in rec.offers],
-            use_container_width=True, hide_index=True,
-            column_config={"Score": st.column_config.ProgressColumn(
-                "Score", min_value=0.0, max_value=1.0, format="%.3f")},
+            rows, use_container_width=True, hide_index=True,
+            column_config={
+                "Relative": st.column_config.ProgressColumn(
+                    "Relative rank", min_value=0.0, max_value=1.0, format="%.2f",
+                    help="Min-max normalized within these candidates — shows ordering, not absolute probability."),
+                "Score": st.column_config.NumberColumn(
+                    "Raw P(accept)", format="%.4f",
+                    help="Model's raw acceptance probability; saturates near 1.0 for high-value profiles."),
+            },
         )
     else:
         st.info("Pick a customer and an in-session intent, then click **Recommend offers**.")

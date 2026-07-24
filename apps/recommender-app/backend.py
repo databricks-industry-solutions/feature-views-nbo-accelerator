@@ -94,20 +94,24 @@ class Backend:
         # Query the index through the SDK (auths as the app SP) — no separate VS client / PAT.
         # query_vector avoids the server-side FMAPI embed hop; embed once, up front.
         vec = self._embed(context)
+        # Retrieve offer attributes too — the ranker uses base_reward/tier_requirement/category
+        # to differentiate offers for a given customer (without them, scores saturate per profile).
+        cols = ["offer_id", "product_category", "offer_text", "base_reward", "tier_requirement"]
         t0 = time.perf_counter()
         res = self._w.vector_search_indexes.query_index(
-            index_name=VS_INDEX,
-            columns=["offer_id", "product_category", "offer_text"],
-            query_vector=vec,
-            num_results=k,
+            index_name=VS_INDEX, columns=cols, query_vector=vec, num_results=k,
         )
         candidates = res.result.data_array if res.result else []
         timing.retrieval_ms = (time.perf_counter() - t0) * 1000
+        idx = {c: i for i, c in enumerate(cols)}
 
         # Stage 2 — ranking on the route-optimized endpoint. Route-optimized endpoints must be
         # called via the data-plane client (resolves data-plane URL + downscoped OAuth token).
         recs = [{
-            "offer_id": c[0],
+            "offer_id": c[idx["offer_id"]],
+            "product_category": c[idx["product_category"]],
+            "base_reward": float(c[idx["base_reward"]]),
+            "tier_requirement": int(c[idx["tier_requirement"]]),
             "cust_loyalty_tier": customer["loyalty_tier"],
             "cust_risk_band": customer["risk_band"],
             **_DEFAULT_AGG,
@@ -120,9 +124,9 @@ class Backend:
         timing.ranking_ms = (time.perf_counter() - t1) * 1000
 
         offers = [{
-            "offer_id": c[0],
-            "product_category": c[1],
-            "offer_text": c[2],
+            "offer_id": c[idx["offer_id"]],
+            "product_category": c[idx["product_category"]],
+            "offer_text": c[idx["offer_text"]],
             "score": float(p),
         } for c, p in zip(candidates, preds)]
         offers.sort(key=lambda o: o["score"], reverse=True)
