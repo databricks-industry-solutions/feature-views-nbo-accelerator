@@ -18,8 +18,8 @@
 # MAGIC    (MSK auto-creates the topic on first produce; see the topic note if yours disables that.)
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "nbo_accelerator")
-dbutils.widgets.text("schema", "main")
+dbutils.widgets.text("catalog", "fins-industry-solutions")
+dbutils.widgets.text("schema", "nbo")
 dbutils.widgets.text("kafka_connection", "msk_kafka", "UC Kafka connection name")
 dbutils.widgets.text("service_credential", "msk_kafka", "UC service credential (MSK IAM)")
 dbutils.widgets.text("topic", "nbo-session-events")

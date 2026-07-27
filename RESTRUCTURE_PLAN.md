@@ -1,6 +1,13 @@
 # Restructure Plan — Two-Part Accelerator (for review)
 
-**Owners:** Sixuan, Tian · **Status:** Proposed — review before implementation · **Date:** 2026-07-24
+**Owners:** Sixuan, Tian · **Status:** ✅ IMPLEMENTED (reviewed 2026-07-24) · **Date:** 2026-07-24
+
+> Implemented 2026-07-27: notebooks reorganized into `part1_feature_views/` (00–06) and
+> `part2_realtime_two_stage/` (07–11); Asset Bundle split into `part1_job.yml` + `part2_job.yml`;
+> README rewritten as Part 1 → Part 2 with per-part architecture diagrams. Defaults chosen per the
+> open questions below: two subfolders, Part 1 notebook-only (app is the Part 2 capstone), one
+> `cust_clicks_10m` streaming feature, one repo. Part 2 notebooks 08 (streaming FVs) and 09 (VS
+> index) are authored but not yet run end-to-end — that's the next execution pass.
 
 ## Why restructure
 

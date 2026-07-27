@@ -1,6 +1,8 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 05b · True Online Feature Lookup Serving (the purest Feature Views story)
+# MAGIC # Part 1 · 05 · Deploy the Ranking Endpoint (true online feature lookup)
+# MAGIC The purest Feature Views story, and Part 1's headline. **No Vector Search** — the endpoint
+# MAGIC ranks a candidate set passed in the request (for the 40-offer catalog, all offers).
 # MAGIC The ranking endpoint auto-fetches customer features **from the online store by
 # MAGIC `customer_id`** at request time — the request body carries only `customer_id` + the
 # MAGIC offer fields. This is the "author a feature once, serve it online" proof point.

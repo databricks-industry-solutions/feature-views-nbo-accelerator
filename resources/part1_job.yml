@@ -1,12 +1,13 @@
-# Sequential job that runs the accelerator notebooks end-to-end on serverless compute.
+# Part 1 — Feature Views Fundamentals. Batch feature views → train → online-lookup ranking.
+# No Vector Search, no streaming. Runs end-to-end on serverless.
 resources:
   jobs:
-    nbo_build_pipeline:
-      name: "[NBO] Build Real-Time Next-Best-Offer"
+    nbo_part1_feature_views:
+      name: "[NBO] Part 1 · Feature Views Fundamentals"
       tasks:
         - task_key: setup
           notebook_task:
-            notebook_path: ../notebooks/00_setup.py
+            notebook_path: ../notebooks/part1_feature_views/00_setup.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
@@ -15,28 +16,15 @@ resources:
         - task_key: generate_data
           depends_on: [{ task_key: setup }]
           notebook_task:
-            notebook_path: ../notebooks/01_generate_synthetic_data.py
+            notebook_path: ../notebooks/part1_feature_views/01_generate_data.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-
-        - task_key: kafka_producer
-          depends_on: [{ task_key: generate_data }]
-          # Bounded run to seed the topic; flip mode=continuous for a live demo.
-          notebook_task:
-            notebook_path: ../notebooks/01b_kafka_topic_and_producer.py
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              kafka_connection: ${var.kafka_connection}
-              service_credential: ${var.service_credential}
-              topic: ${var.kafka_topic}
-              mode: bounded
 
         - task_key: define_feature_views
-          depends_on: [{ task_key: generate_data }, { task_key: kafka_producer }]
+          depends_on: [{ task_key: generate_data }]
           notebook_task:
-            notebook_path: ../notebooks/02_define_feature_views.py
+            notebook_path: ../notebooks/part1_feature_views/02_define_feature_views.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
@@ -44,7 +32,7 @@ resources:
         - task_key: materialize
           depends_on: [{ task_key: define_feature_views }]
           notebook_task:
-            notebook_path: ../notebooks/03_materialize_features.py
+            notebook_path: ../notebooks/part1_feature_views/03_materialize_features.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
@@ -53,24 +41,24 @@ resources:
         - task_key: train_ranker
           depends_on: [{ task_key: materialize }]
           notebook_task:
-            notebook_path: ../notebooks/04_train_ranker.py
+            notebook_path: ../notebooks/part1_feature_views/04_train_ranker.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
 
-        - task_key: deploy_serving
+        - task_key: deploy_ranking_endpoint
           depends_on: [{ task_key: train_ranker }]
           notebook_task:
-            notebook_path: ../notebooks/05_deploy_serving.py
+            notebook_path: ../notebooks/part1_feature_views/05_deploy_ranking_endpoint.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              vector_search_endpoint: ${var.vector_search_endpoint}
 
         - task_key: latency_benchmark
-          depends_on: [{ task_key: deploy_serving }]
+          depends_on: [{ task_key: deploy_ranking_endpoint }]
           notebook_task:
-            notebook_path: ../notebooks/06_latency_benchmark.py
+            notebook_path: ../notebooks/part1_feature_views/06_latency_benchmark.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
+              ranker_endpoint: nbo-ranker-online

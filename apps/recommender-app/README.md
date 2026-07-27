@@ -7,15 +7,15 @@ meter**, proving the sub-300ms serving path.
 1. Pick a customer (loyalty tier + risk band shown) and an in-session intent.
 2. **Recommend** runs the two-stage path:
    - **Stage 1 — retrieval:** Vector Search ANN over `offers_index` (offer embeddings).
-   - **Stage 2 — ranking:** the `nbo-ranker` Model Serving endpoint scores customer × candidates.
+   - **Stage 2 — ranking:** the `nbo-ranker-online` Model Serving endpoint (online feature lookup) scores customer × candidates.
 3. Per-stage + end-to-end latency render as live metrics, colored against the 300ms budget.
-4. A reference panel reads the benchmarked percentiles from `latency_results` (notebook 06).
+4. A reference panel reads the benchmarked percentiles from `latency_results` (Part 2 notebook 11).
 
 ## Resources (wire via Apps UI → Configure → + Add resource)
 | Key (`valueFrom`) | Resource | Permission |
 |---|---|---|
 | `sql-warehouse` | a SQL warehouse | Can use |
-| `serving-endpoint` | `nbo-ranker` | Can query |
+| `serving-endpoint` | `nbo-ranker-online` | Can query |
 
 The Vector Search index/endpoint and catalog/schema are passed as plain env values
 in `app.yaml` (the app queries the index via the SDK using the service principal).
@@ -40,6 +40,6 @@ and grant the app's service principal `SELECT` on the catalog and `Can Query` on
 ## Deployed instance
 - **Live on `fe-vm-ttan-vm`**: `https://nbo-recommender-2669921646648788.aws.databricksapps.com`
 - Resources wired: `sql-warehouse` → warehouse `2a0b73493fe19b04` (CAN_USE),
-  `serving-endpoint` → `nbo-ranker` (CAN_QUERY).
+  `serving-endpoint` → `nbo-ranker-online` (CAN_QUERY).
 - App service principal granted `USE_CATALOG`/`USE_SCHEMA`/`SELECT` on
   `fins-industry-solutions` and `SELECT` on `offers_index`.
