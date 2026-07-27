@@ -20,15 +20,10 @@ CATALOG = os.getenv("CATALOG", "fins-industry-solutions")
 SCHEMA = os.getenv("SCHEMA", "nbo")
 VS_ENDPOINT = os.getenv("VS_ENDPOINT", "nbo-vs-endpoint")
 VS_INDEX = os.getenv("VS_INDEX", f"{CATALOG}.{SCHEMA}.offers_index")
-RANKER_ENDPOINT = os.getenv("RANKER_ENDPOINT", "nbo-ranker")
-
-# Neutral defaults for the aggregation features that the ranker takes as request
-# inputs (see notebook 05 design note — online agg tables aren't auto-looked-up here).
-_DEFAULT_AGG = {
-    "cust_avg_balance_30d": 25000.0,
-    "cust_spend_90d": 5000.0,
-    "cust_txn_count_7d": 5.0,
-}
+# Online-lookup endpoint: fetches the 5 customer features from the online store by
+# customer_id at request time (notebook 05b). The request carries only customer_id +
+# the offer fields — the "author once, serve online" proof point.
+RANKER_ENDPOINT = os.getenv("RANKER_ENDPOINT", "nbo-ranker-online")
 
 
 @dataclass
@@ -105,16 +100,16 @@ class Backend:
         timing.retrieval_ms = (time.perf_counter() - t0) * 1000
         idx = {c: i for i, c in enumerate(cols)}
 
-        # Stage 2 — ranking on the route-optimized endpoint. Route-optimized endpoints must be
-        # called via the data-plane client (resolves data-plane URL + downscoped OAuth token).
+        # Stage 2 — ranking on the route-optimized online-lookup endpoint. The request carries
+        # only customer_id + the offer fields; the endpoint fetches the 5 customer features from
+        # the online store by customer_id. Route-optimized → data-plane client (data-plane URL +
+        # downscoped OAuth token).
         recs = [{
+            "customer_id": customer["customer_id"],
             "offer_id": c[idx["offer_id"]],
             "product_category": c[idx["product_category"]],
             "base_reward": float(c[idx["base_reward"]]),
             "tier_requirement": int(c[idx["tier_requirement"]]),
-            "cust_loyalty_tier": customer["loyalty_tier"],
-            "cust_risk_band": customer["risk_band"],
-            **_DEFAULT_AGG,
         } for c in candidates]
 
         t1 = time.perf_counter()

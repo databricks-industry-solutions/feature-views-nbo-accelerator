@@ -71,17 +71,21 @@ ranking endpoint — no train/serve skew, no retrieval machinery."
 
 **Headline metric:** online feature-read + rank **p50 well under 50ms in-region**.
 
-**Design decision to confirm (⚠️ real dependency):** Part 1's cleanest form uses **online feature
-lookup** — either `fe.log_model(training_set=...)` (endpoint auto-fetches features) or a **Feature
-Serving endpoint**. That needs the online store populated. We hit a gap where **CronSchedule
-aggregation online tables didn't backfill on demand** (only ColumnSelection/TableTrigger did). Two
-options for Part 1:
-- **(A) Fix the online path** — resolve the CronSchedule backfill (worth an ES ticket) so the
-  endpoint does true online lookup. Best demonstration of Feature Views' online value.
-- **(B) Fallback** — pass aggregate features in the request (as today), use online lookup only for
-  the ColumnSelection features that do materialize. Works now; slightly less "pure."
-Recommend targeting **(A)** for Part 1 since online serving *is* the point; keep **(B)** as the
-documented fallback.
+**Online feature lookup — RESOLVED ✅ (Option A achieved, no ES ticket needed).** True online
+lookup now works end-to-end (notebook `05b_online_lookup_serving.py`): the `nbo-ranker-online`
+endpoint auto-fetches all 5 customer features from the online store by `customer_id`; the request
+body carries only `{customer_id, offer_id, product_category, base_reward, tier_requirement}`.
+Verified per-customer offer spread up to 1.0, ~15ms in-region.
+- The earlier "CronSchedule aggregation tables never backfill" concern was a **misdiagnosis** —
+  the `nbo_off_*`/`nbo_on_*` tables *did* populate (async provisioning took longer than the initial
+  8-min poll). No product gap; no ES ticket.
+- The one real trick: request-time offer columns coexist with online-looked-up features by
+  declaring them via **`RequestSource`** + a passthrough `ColumnSelection` feature per column
+  (feature name **must equal** the column name; register each with `create_feature`). `fe.log_model`
+  then forwards both sets to the raw model at serving time.
+- Part 1 uses this online-lookup endpoint as the headline. The request-input fallback (features
+  passed in the body) remains documented in `05_deploy_serving.py` for workspaces where the online
+  store isn't populated.
 
 ---
 
