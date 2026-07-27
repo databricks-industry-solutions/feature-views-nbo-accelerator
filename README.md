@@ -14,17 +14,17 @@
 The accelerator is split into **two self-contained parts** so you can get the core Feature Views
 win fast, then scale up to the full real-time recommender:
 
-| | Part 1 — Feature Views Fundamentals | Part 2 — Real-Time Two-Stage Recommender |
+| | Part 1 — Feature Views Fundamentals | Part 2 — Real-Time Streaming Recommender |
 |---|---|---|
-| **Goal** | Author once → train + serve, sub-50ms feature-read + rank | Catalog-scale retrieval + freshest in-session intent |
-| **Adds** | Batch feature views, online lookup, route-optimized ranking | Streaming (MSK) features + Vector Search retrieval |
-| **No** | Vector Search, streaming | — (builds on Part 1) |
-| **Headline** | feature-read + rank **p50 < 50ms in-region** | two-stage serving **p95 < 300ms**; freshness **~200ms p99** |
-| **Notebooks** | `notebooks/part1_feature_views/` (00–06) | `notebooks/part2_realtime_two_stage/` (07–11) |
+| **Goal** | Author once → train + serve, sub-50ms feature-read + rank | Freshest in-session intent as a streaming feature |
+| **Adds** | Batch feature views, online lookup, route-optimized ranking | Streaming (MSK) `RollingWindow` feature feeding the ranker |
+| **No** | Vector Search, streaming | Vector Search (rank-all; retrieval is out of scope) |
+| **Headline** | feature-read + rank **p50 < 50ms in-region** | feature-read + rank ≈15ms; freshness **~200ms p99** |
+| **Notebooks** | `notebooks/part1_feature_views/` (00–06) | `notebooks/part2_realtime_two_stage/` (07–10) |
 | **Job** | `resources/part1_job.yml` | `resources/part2_job.yml` (assumes Part 1 has run) |
 
-Both parts share one catalog, one set of feature definitions, and **one ranker endpoint** — Part 2
-reuses Part 1's ranker unchanged, only adding a retrieval stage in front and a streaming feature.
+Both parts share one catalog and one set of feature definitions. Part 2 re-logs the ranker with the
+streaming `cust_clicks_10m` feature added — same online-lookup pattern, one more feature.
 
 ---
 
@@ -78,30 +78,32 @@ Delta: customers, transactions, offers, labels
 
 ---
 
-## Part 2 — Real-Time Two-Stage Recommender
+## Part 2 — Real-Time Streaming Recommender
 
-*Scale to a real catalog and capture the customer's freshest in-session intent — streaming
-features + Vector Search retrieval feeding the same ranker.*
+*Capture the customer's freshest in-session intent — a streaming feature feeding the same ranker,
+scored in real time. No Vector Search: personalization lives entirely in the ranker.*
 
 ```
-in-session events ─► MSK (msk_kafka) ─► RollingWindow streaming FV ─► nbo_stream_* ┐  (4th online feature)
-                                                                                    │
-Part 1 batch online features ───────────────────────────────────────────────────────┤
-offers ─► embeddings ─► Vector Search index (offers_index)                            │
-                                                                                    ▼
-   request {customer_id, in-session context}
+in-session events ─► MSK (msk_kafka) ─► RollingWindow streaming FV (cust_clicks_10m) ─► online store
+                                                                                          │
+Part 1 batch online features (5) ─────────────────────────────────────────────────────────┤ (6 online features)
+                                                                                          ▼
+   request {customer_id, offer_id + offer attrs}   (all offers — rank-all, NO retrieval)
       │
-      ▼  [1] RETRIEVE  Vector Search (query_vector, top-K)          ~90ms
-      ▼  [2] RANK      Part 1 endpoint + online lookup              ~15ms + online read
+      ▼  ONLINE LOOKUP of 6 customer features by customer_id (incl. live cust_clicks_10m)
+      ▼  RANK on nbo-ranker-realtime (route-optimized)          ≈15ms in-region
       → ranked offers
 ```
 
-- **Streaming features:** `create_stream` registers the MSK topic; `RollingWindow` computes
-  `cust_clicks_10m` (in-session click count, last 10 min) — the blog's freshest-intent differentiator.
-- **Retrieval:** managed-embedding Vector Search index over `offer_text`; retrieve top-K by semantic
-  match to the in-session context. This is what makes ranking scale past a tiny catalog.
-- **Two numbers, kept honest:** serving **p95 < 300ms** (retrieve + rank) *and* streaming freshness
-  **~200ms p99** (event → online availability) — reported separately.
+- **Streaming feature:** `create_stream` registers the MSK topic; a `RollingWindow` computes
+  `cust_clicks_10m` (in-session click count, last 10 min) via `StreamingMode` — the blog's
+  freshest-intent differentiator. It's looked up online by `customer_id` like any batch feature.
+- **Ranker consumes it:** the ranker is re-logged (notebook 09) with `cust_clicks_10m` in the
+  training set, so the endpoint fetches it live at serve time and it actually changes recommendations.
+- **Rank-all, no retrieval:** for the ~40-offer catalog we score every offer directly. Vector Search
+  would add ~90ms for no benefit at this catalog size — deliberately out of scope (see note below).
+- **Two numbers, kept honest and live-measured:** serving **feature-read + rank** (≈15ms in-region)
+  *and* streaming freshness **event → online availability** (~200ms p99 reference), reported separately.
 
 **Notebooks** (`notebooks/part2_realtime_two_stage/`):
 
@@ -109,31 +111,15 @@ offers ─► embeddings ─► Vector Search index (offers_index)              
 |---|---|---|
 | 07 | `07_kafka_topic_and_producer` | Seed the MSK topic + synthetic in-session event producer |
 | 08 | `08_streaming_feature_views` | `RollingWindow` streaming FV (`cust_clicks_10m`) via `StreamingMode` |
-| 09 | `09_vector_search_index` | Offer embeddings → Vector Search index |
-| 10 | `10_two_stage_serving` | Stage 1 retrieve (VS) → Stage 2 rank (Part 1 endpoint) |
-| 11 | `11_latency_and_freshness` | Serving p50/p95/p99 + streaming freshness |
+| 09 | `09_realtime_serving` | Re-log ranker with the streaming feature → route-optimized rank-all endpoint |
+| 10 | `10_latency_and_freshness` | Live serving latency + event→online freshness benchmark |
 
-### Why Vector Search is Part 2, not Part 1
-For the 40-offer demo catalog you can score every offer directly (Part 1). Retrieval earns its
-place only at catalog scale — thousands of products / eligibility-scoped offers — where ANN narrows
-N→K under the latency budget. Part 2 shows the pattern on the small catalog but frames it as *"the
-architecture you use at scale."*
-
----
-
-## Serving-latency optimization journey (Part 2, measured on `fe-vm-ttan-vm`)
-
-| Config | Retrieval p50 | Ranking p50 | E2E p95 | E2E p99 |
-|---|---|---|---|---|
-| v1 — `query_text` + proxy endpoint + scale-to-zero | ~145ms | ~30ms | ~235ms | ~660ms |
-| **v2 — `query_vector` + route-optimized + warm** | **~90ms** | **≈15ms (in-region)** | **~120ms** | **~210ms** |
-
-1. **Retrieval** — embed the session context client-side and pass `query_vector` instead of
-   `query_text`; the managed-embedding FMAPI hop was ~50ms (retrieval p50 139→90ms, p99 352→178ms).
-2. **Ranking** — recreate the endpoint with `route_optimized=True` + `scale_to_zero=False`; bypasses
-   the serving proxy and removes the cold-start p99 tail. Route-optimized endpoints must be queried
-   via the data-plane client (`w.serving_endpoints_data_plane`). In-region ranking ≈15ms. (A
-   laptop-measured 85ms is dominated by ~80ms cross-region WAN RTT.)
+### Why no Vector Search here (and when you'd add it)
+For the ~40-offer NBO catalog you can score every offer directly — retrieval adds a fixed ~90ms for
+no benefit and no accuracy gain (the ranker is the accuracy engine). Vector Search retrieval earns
+its place only at **catalog scale** (thousands of products / eligibility-scoped offers), where ANN
+narrows N→K to keep ranking cost bounded under the latency budget. That's a documented extension, not
+part of this real-time streaming demo.
 
 ---
 
@@ -142,7 +128,7 @@ architecture you use at scale."*
 | Path | Contents |
 |---|---|
 | `notebooks/part1_feature_views/` | Part 1 (00–06): batch feature views → train → online-lookup ranking |
-| `notebooks/part2_realtime_two_stage/` | Part 2 (07–11): streaming FVs + Vector Search + two-stage serving |
+| `notebooks/part2_realtime_two_stage/` | Part 2 (07–10): streaming FV + real-time rank-all serving + freshness |
 | `apps/recommender-app/` | Databricks App: live NBO demo UI + real-time latency meter (Part 2 capstone) |
 | `dashboards/` | AI/BI dashboard: latency percentiles, offer quality, feature freshness |
 | `resources/` | Asset Bundle: `part1_job.yml`, `part2_job.yml`, app + dashboard |
@@ -159,8 +145,7 @@ architecture you use at scale."*
 ### Prerequisites
 
 - DBR **17.0 ML** or later; `databricks-feature-engineering >= 0.16.0`; **serverless (latest env)**
-- **Lakebase** online store, **Model Serving** (Part 1); **Vector Search** + a **Kafka/MSK** UC
-  connection (Part 2)
+- **Lakebase** online store, **Model Serving** (Part 1); a **Kafka/MSK** UC connection (Part 2)
 - A Unity Catalog catalog on **standard storage** (streaming Feature Views cannot use default storage)
 
 ## Contributing

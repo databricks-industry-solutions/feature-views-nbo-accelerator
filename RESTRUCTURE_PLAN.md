@@ -3,11 +3,18 @@
 **Owners:** Sixuan, Tian · **Status:** ✅ IMPLEMENTED (reviewed 2026-07-24) · **Date:** 2026-07-24
 
 > Implemented 2026-07-27: notebooks reorganized into `part1_feature_views/` (00–06) and
-> `part2_realtime_two_stage/` (07–11); Asset Bundle split into `part1_job.yml` + `part2_job.yml`;
+> `part2_realtime_two_stage/`; Asset Bundle split into `part1_job.yml` + `part2_job.yml`;
 > README rewritten as Part 1 → Part 2 with per-part architecture diagrams. Defaults chosen per the
 > open questions below: two subfolders, Part 1 notebook-only (app is the Part 2 capstone), one
-> `cust_clicks_10m` streaming feature, one repo. Part 2 notebooks 08 (streaming FVs) and 09 (VS
-> index) are authored but not yet run end-to-end — that's the next execution pass.
+> `cust_clicks_10m` streaming feature, one repo.
+>
+> **UPDATE 2026-07-27 — Vector Search dropped from Part 2.** Per review, VS adds ~90ms for no
+> benefit at a 40-offer catalog and provides no accuracy gain (the ranker is the accuracy engine).
+> Part 2 is now **streaming + real-time only**: 07 producer → 08 streaming FV (`cust_clicks_10m`) →
+> **09 real-time serving** (re-log ranker to consume the streaming feature, rank-all, no retrieval) →
+> **10 latency & freshness** (live-measured). The old `09_vector_search_index` / `10_two_stage_serving`
+> notebooks were removed. VS remains a documented catalog-scale extension only. The sections below
+> describing "two-stage / Vector Search retrieval" are the original proposal, kept for history.
 
 ## Why restructure
 

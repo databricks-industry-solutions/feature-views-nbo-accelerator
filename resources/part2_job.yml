@@ -1,13 +1,14 @@
-# Part 2 — Real-Time Two-Stage Recommender. Adds streaming in-session features (MSK) +
-# Vector Search retrieval feeding the SAME ranker from Part 1. Assumes Part 1 has run
-# (reuses its catalog, features, online store, and ranking endpoint).
+# Part 2 — Real-Time Streaming Recommender. Adds streaming in-session features (MSK) feeding
+# the SAME ranker from Part 1 — now re-logged to consume the live cust_clicks_10m feature.
+# No Vector Search: personalization lives entirely in the ranker (rank-all the offer catalog).
+# Assumes Part 1 has run (reuses its catalog, features, online store).
 resources:
   jobs:
-    nbo_part2_realtime_two_stage:
-      name: "[NBO] Part 2 · Real-Time Two-Stage Recommender"
+    nbo_part2_realtime_streaming:
+      name: "[NBO] Part 2 · Real-Time Streaming Recommender"
       tasks:
         - task_key: kafka_producer
-          # Bounded run to seed the topic; flip mode=continuous for a live demo.
+          # Bounded run to seed the topic; flip mode=continuous for a live demo + freshness bench.
           notebook_task:
             notebook_path: ../notebooks/part2_realtime_two_stage/07_kafka_topic_and_producer.py
             base_parameters:
@@ -29,30 +30,22 @@ resources:
               topic: ${var.kafka_topic}
               online_store_name: ${var.online_store_name}
 
-        - task_key: vector_search_index
+        - task_key: realtime_serving
+          depends_on: [{ task_key: streaming_feature_views }]
           notebook_task:
-            notebook_path: ../notebooks/part2_realtime_two_stage/09_vector_search_index.py
+            notebook_path: ../notebooks/part2_realtime_two_stage/09_realtime_serving.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              vs_endpoint: ${var.vector_search_endpoint}
-
-        - task_key: two_stage_serving
-          depends_on: [{ task_key: streaming_feature_views }, { task_key: vector_search_index }]
-          notebook_task:
-            notebook_path: ../notebooks/part2_realtime_two_stage/10_two_stage_serving.py
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              vs_endpoint: ${var.vector_search_endpoint}
-              ranker_endpoint: nbo-ranker-online
 
         - task_key: latency_and_freshness
-          depends_on: [{ task_key: two_stage_serving }]
+          depends_on: [{ task_key: realtime_serving }]
           notebook_task:
-            notebook_path: ../notebooks/part2_realtime_two_stage/11_latency_and_freshness.py
+            notebook_path: ../notebooks/part2_realtime_two_stage/10_latency_and_freshness.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              vs_endpoint: ${var.vector_search_endpoint}
-              ranker_endpoint: nbo-ranker-online
+              ranker_endpoint: nbo-ranker-realtime
+              kafka_connection: ${var.kafka_connection}
+              service_credential: ${var.service_credential}
+              topic: ${var.kafka_topic}

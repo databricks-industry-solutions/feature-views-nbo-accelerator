@@ -111,9 +111,8 @@ print("Streaming materialization started for cust_clicks_10m.")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Next → notebook 10 (two-stage serving)
-# MAGIC To feed this streaming feature to the ranker, add it to the online-lookup training set and
-# MAGIC re-log the model (same pattern as Part 1 · 05, now with `cust_clicks_10m` among the
-# MAGIC looked-up features). The endpoint then fetches all customer features — batch + streaming —
-# MAGIC by `customer_id` at request time. Freshness (event → online availability) is measured in
-# MAGIC notebook 11 alongside the two-stage serving latency.
+# MAGIC ## Next → notebook 09 (real-time serving)
+# MAGIC Notebook 09 re-logs the ranker with `cust_clicks_10m` added to the online-lookup training
+# MAGIC set (same pattern as Part 1 · 05, now with 6 looked-up features). The endpoint then fetches
+# MAGIC all customer features — batch + streaming — by `customer_id` at request time, and ranks all
+# MAGIC offers. Serving latency + event→online freshness are measured live in notebook 10.
