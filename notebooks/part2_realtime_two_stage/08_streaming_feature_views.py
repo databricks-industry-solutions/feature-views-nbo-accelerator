@@ -48,19 +48,21 @@ fe = FeatureEngineeringClient()
 
 # COMMAND ----------
 # MAGIC %md ## 1 · Register the Kafka topic as a governed stream
-# MAGIC The payload schema mirrors the producer in notebook 07. Fields are exposed under `value.*`.
+# MAGIC The payload schema mirrors the producer in notebook 07, in **JSON Schema** format (not Spark
+# MAGIC StructType JSON). `event_time` must be a **date-time string** — the streaming FV's timeseries
+# MAGIC column must be TIMESTAMP, so epoch-millis integers are rejected. Fields are under `value.*`.
 SESSION_EVENT_JSON_SCHEMA = """
 {
-  "type": "struct",
-  "fields": [
-    {"name": "event_id",         "type": "string",  "nullable": false, "metadata": {}},
-    {"name": "customer_id",      "type": "string",  "nullable": false, "metadata": {}},
-    {"name": "event_time",       "type": "long",    "nullable": false, "metadata": {}},
-    {"name": "event_type",       "type": "string",  "nullable": true,  "metadata": {}},
-    {"name": "product_category", "type": "string",  "nullable": true,  "metadata": {}},
-    {"name": "dwell_ms",         "type": "integer", "nullable": true,  "metadata": {}},
-    {"name": "device",           "type": "string",  "nullable": true,  "metadata": {}}
-  ]
+  "type": "object",
+  "properties": {
+    "event_id":         {"type": "string"},
+    "customer_id":      {"type": "string"},
+    "event_time":       {"type": "string", "format": "date-time"},
+    "event_type":       {"type": "string"},
+    "product_category": {"type": "string"},
+    "dwell_ms":         {"type": "integer"},
+    "device":           {"type": "string"}
+  }
 }
 """
 

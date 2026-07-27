@@ -1,30 +1,35 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 01b · Kafka Topic + Synthetic Stream Producer
-# MAGIC Produces synthetic in-session clickstream events into the MSK topic that backs the
-# MAGIC `RollingWindow` streaming Feature Views (notebook 02) — the customer's **freshest
-# MAGIC in-session intent**.
+# MAGIC # Part 2 · 07 · Kafka Topic + Synthetic Stream Producer
+# MAGIC Creates the MSK topic and produces synthetic in-session clickstream events that back the
+# MAGIC `RollingWindow` streaming feature (notebook 08) — the customer's **freshest in-session intent**.
 # MAGIC
-# MAGIC **Auth — verified against this workspace (`fe-vm-ttan-vm`):**
-# MAGIC - UC Kafka connection **`msk_kafka`** → AWS MSK (provisioned), IAM auth, public TLS port **9198**.
-# MAGIC - Backed by UC **service credential `msk_kafka`** (role `ttan-fv-databricks-msk-access`).
-# MAGIC   Its own comment says: *use via* `.option("databricks.serviceCredential", "msk_kafka")`.
-# MAGIC - So we authenticate the **Spark Kafka connector** with the service credential — Databricks
-# MAGIC   mints the MSK IAM token; **no static AWS credentials in the notebook**.
+# MAGIC **Verified end-to-end on `fe-vm-ttan-vm`.** Auth uses the UC Kafka connection **`msk_kafka`**
+# MAGIC (AWS MSK, IAM, public-TLS :9198) backed by the UC **service credential `msk_kafka`**.
 # MAGIC
-# MAGIC **What it does**
-# MAGIC 1. Read bootstrap servers from the UC connection.
-# MAGIC 2. Produce synthetic events to the topic via Spark `write`/`writeStream` (`.format("kafka")`).
-# MAGIC    (MSK auto-creates the topic on first produce; see the topic note if yours disables that.)
+# MAGIC Two auth paths, each for what it's good at:
+# MAGIC - **Producing** (Spark `write`) → `.option("databricks.serviceCredential", "msk_kafka")`.
+# MAGIC   Databricks mints the MSK IAM token; **do NOT also set** `kafka.security.protocol` /
+# MAGIC   `kafka.sasl.mechanism` (rejected as conflicting when a service credential is used).
+# MAGIC - **Topic admin** (create topic) → the Spark connector can't do admin ops, so we fetch
+# MAGIC   temporary AWS creds from the service credential and use a Kafka `AdminClient` with the
+# MAGIC   AWS MSK IAM signer. (MSK here has auto-create disabled, so the topic must be pre-created.)
+# MAGIC
+# MAGIC **Gotcha:** `event_time` must be an **ISO-8601 timestamp string** — the streaming FV's
+# MAGIC timeseries column must be TIMESTAMP, and epoch-millis integers are rejected (notebook 08).
+
+# COMMAND ----------
+# MAGIC %pip install confluent-kafka aws-msk-iam-sasl-signer-python
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins-industry-solutions")
 dbutils.widgets.text("schema", "nbo")
-dbutils.widgets.text("kafka_connection", "msk_kafka", "UC Kafka connection name")
-dbutils.widgets.text("service_credential", "msk_kafka", "UC service credential (MSK IAM)")
+dbutils.widgets.text("kafka_connection", "msk_kafka")
+dbutils.widgets.text("service_credential", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
 dbutils.widgets.text("mode", "bounded", "bounded | continuous")
-dbutils.widgets.text("num_events", "500000")
+dbutils.widgets.text("num_events", "200000")
 dbutils.widgets.text("events_per_sec", "2000")
 
 catalog = dbutils.widgets.get("catalog")
@@ -36,113 +41,91 @@ mode = dbutils.widgets.get("mode")
 num_events = int(dbutils.widgets.get("num_events"))
 events_per_sec = int(dbutils.widgets.get("events_per_sec"))
 
-# COMMAND ----------
-# MAGIC %md ## 1 · Resolve bootstrap servers from the UC connection
+import os
+import re
 from databricks.sdk import WorkspaceClient
+from pyspark.sql import functions as F
 
 w = WorkspaceClient()
 conn = w.connections.get(name=conn_name)
-opts = dict(conn.options or {})
-BOOTSTRAP = opts["bootstrap_servers"]  # e.g. b-1-public.ttanfvmsk...:9198,b-2-...,b-3-...
-print("Connection:", conn.name, "| type:", conn.connection_type)
-print("bootstrap:", BOOTSTRAP)
+BOOTSTRAP = dict(conn.options or {})["bootstrap_servers"]
+REGION = (re.search(r"\.([a-z]{2}-[a-z]+-\d)\.amazonaws\.com", BOOTSTRAP) or [None, "us-west-2"])[1]
+print("bootstrap:", BOOTSTRAP, "| region:", REGION)
 
-# Shared Kafka options. With databricks.serviceCredential set, Databricks wires the MSK IAM
-# SASL callback for us; security.protocol/sasl.mechanism are set explicitly for clarity.
-KAFKA_OPTS = {
-    "kafka.bootstrap.servers": BOOTSTRAP,
-    "databricks.serviceCredential": service_credential,
-    "kafka.security.protocol": "SASL_SSL",
-    "kafka.sasl.mechanism": "AWS_MSK_IAM",
-}
+# COMMAND ----------
+# MAGIC %md ## 1 · Create the topic (idempotent) — temp AWS creds + Kafka AdminClient (MSK IAM)
+import requests
+
+resp = requests.post(
+    f"{w.config.host}/api/2.1/unity-catalog/temporary-service-credentials",
+    headers={**w.config.authenticate(), "Content-Type": "application/json"},
+    json={"credential_name": service_credential},
+)
+resp.raise_for_status()
+creds = resp.json()["aws_temp_credentials"]
+os.environ["AWS_ACCESS_KEY_ID"] = creds["access_key_id"]
+os.environ["AWS_SECRET_ACCESS_KEY"] = creds["secret_access_key"]
+os.environ["AWS_SESSION_TOKEN"] = creds["session_token"]
+os.environ["AWS_REGION"] = REGION
+
+from aws_msk_iam_sasl_signer import MSKAuthTokenProvider
+from confluent_kafka.admin import AdminClient, NewTopic
+
+def _oauth_cb(_cfg):
+    token, expiry_ms = MSKAuthTokenProvider.generate_auth_token(REGION)
+    return token, expiry_ms / 1000.0
+
+admin = AdminClient({
+    "bootstrap.servers": BOOTSTRAP,
+    "security.protocol": "SASL_SSL",
+    "sasl.mechanism": "OAUTHBEARER",
+    "oauth_cb": _oauth_cb,
+})
+if topic in admin.list_topics(timeout=15).topics:
+    print(f"Topic '{topic}' already exists.")
+else:
+    for t, f in admin.create_topics([NewTopic(topic, num_partitions=6, replication_factor=3)]).items():
+        f.result(timeout=30)
+        print(f"Created topic '{t}'.")
 
 # COMMAND ----------
 # MAGIC %md ## 2 · Synthetic event schema
-# MAGIC Events mirror the `session_events` batch table from notebook 01 so the streaming features
-# MAGIC and the point-in-time training set stay consistent. The Kafka `value` is a JSON string;
-# MAGIC notebook 02 exposes payload fields under `value.*` (and the key under `key.*`).
-from pyspark.sql import functions as F
-
-N_CUSTOMERS = 100_000  # keep in sync with notebook 01
+# MAGIC Mirrors the `session_events` batch table. `event_time` is an ISO-8601 string so the
+# MAGIC streaming FV can treat it as TIMESTAMP. Kafka `value` is JSON; notebook 08 exposes fields
+# MAGIC under `value.*`.
+N_CUSTOMERS = 100_000
 EVENT_TYPES = ["page_view", "product_view", "calculator_use", "add_to_cart", "search"]
-PRODUCT_CATEGORIES = ["credit_card", "savings", "personal_loan", "mortgage", "investment"]
+CATS = ["credit_card", "savings", "personal_loan", "mortgage", "investment"]
 DEVICES = ["ios", "android", "web"]
 
-
-def to_events(df, id_col: str):
-    """Map a DataFrame with a monotonic id column into Kafka key/value event rows."""
+def to_events(df, id_col):
     ev = (
         df.withColumn("event_id", F.concat(F.lit("evt_"), F.col(id_col).cast("string")))
-        .withColumn("customer_id",
-                    F.concat(F.lit("cust_"),
-                             (F.abs(F.hash(F.col(id_col))) % N_CUSTOMERS).cast("string")))
-        .withColumn("event_time", (F.unix_timestamp() * 1000).cast("long"))
-        .withColumn("event_type",
-                    F.element_at(F.array(*[F.lit(x) for x in EVENT_TYPES]),
-                                 (F.abs(F.hash(F.col(id_col), F.lit(1))) % len(EVENT_TYPES) + 1)))
-        .withColumn("product_category",
-                    F.element_at(F.array(*[F.lit(x) for x in PRODUCT_CATEGORIES]),
-                                 (F.abs(F.hash(F.col(id_col), F.lit(2))) % len(PRODUCT_CATEGORIES) + 1)))
-        .withColumn("dwell_ms", (F.abs(F.hash(F.col(id_col), F.lit(3))) % 44800 + 200).cast("int"))
-        .withColumn("device",
-                    F.element_at(F.array(*[F.lit(x) for x in DEVICES]),
-                                 (F.abs(F.hash(F.col(id_col), F.lit(4))) % len(DEVICES) + 1)))
+        .withColumn("customer_id", F.concat(F.lit("cust_"), (F.abs(F.hash(id_col)) % N_CUSTOMERS).cast("string")))
+        .withColumn("event_time", F.date_format(F.current_timestamp(), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"))
+        .withColumn("event_type", F.element_at(F.array(*[F.lit(x) for x in EVENT_TYPES]), (F.abs(F.hash(id_col, F.lit(1))) % 5 + 1)))
+        .withColumn("product_category", F.element_at(F.array(*[F.lit(x) for x in CATS]), (F.abs(F.hash(id_col, F.lit(2))) % 5 + 1)))
+        .withColumn("dwell_ms", (F.abs(F.hash(id_col, F.lit(3))) % 44800 + 200).cast("int"))
+        .withColumn("device", F.element_at(F.array(*[F.lit(x) for x in DEVICES]), (F.abs(F.hash(id_col, F.lit(4))) % 3 + 1)))
     )
-    payload = F.struct("event_id", "customer_id", "event_time",
-                       "event_type", "product_category", "dwell_ms", "device")
-    return ev.select(
-        F.col("customer_id").alias("key"),   # partition by customer
-        F.to_json(payload).alias("value"),
-    )
+    payload = F.struct("event_id", "customer_id", "event_time", "event_type", "product_category", "dwell_ms", "device")
+    return ev.select(F.col("customer_id").alias("key"), F.to_json(payload).alias("value"))
+
+KAFKA_OPTS = {"kafka.bootstrap.servers": BOOTSTRAP, "databricks.serviceCredential": service_credential}
 
 # COMMAND ----------
 # MAGIC %md ## 3a · Bounded produce (seed the topic)
-# MAGIC Batch-write `num_events` events. Good for the Asset Bundle job task and quick tests.
 if mode == "bounded":
-    base = spark.range(0, num_events).withColumnRenamed("id", "seq")
-    events = to_events(base, "seq")
-    (events.write.format("kafka").options(**KAFKA_OPTS).option("topic", topic).save())
+    events = to_events(spark.range(0, num_events).withColumnRenamed("id", "seq"), "seq")
+    events.write.format("kafka").options(**KAFKA_OPTS).option("topic", topic).save()
     print(f"Produced {num_events} events to '{topic}'.")
 
 # COMMAND ----------
-# MAGIC %md ## 3b · Continuous produce (live demo)
-# MAGIC Rate source → events → Kafka. Drives live RollingWindow features for the app demo.
-# MAGIC Stop the stream from the cell menu (or set `mode=bounded` for the job).
+# MAGIC %md ## 3b · Continuous produce (live demo + freshness benchmark)
 if mode == "continuous":
     checkpoint = f"/Volumes/{catalog}/{schema}/checkpoints/kafka_producer"
-    rate = (spark.readStream.format("rate")
-            .option("rowsPerSecond", events_per_sec).load()
-            .withColumnRenamed("value", "seq"))
-    events = to_events(rate, "seq")
-    q = (events.writeStream.format("kafka").options(**KAFKA_OPTS)
-         .option("topic", topic)
-         .option("checkpointLocation", checkpoint)
-         .start())
+    rate = spark.readStream.format("rate").option("rowsPerSecond", events_per_sec).load().withColumnRenamed("value", "seq")
+    q = (to_events(rate, "seq").writeStream.format("kafka").options(**KAFKA_OPTS)
+         .option("topic", topic).option("checkpointLocation", checkpoint).start())
     print(f"Streaming ~{events_per_sec} events/s to '{topic}'. Checkpoint: {checkpoint}")
-    # q.awaitTermination()  # uncomment to block
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Topic pre-creation (only if MSK auto-create is disabled)
-# MAGIC Provisioned MSK usually has `auto.create.topics.enable=true`, so the first produce creates
-# MAGIC `nbo-session-events`. If your cluster disables it, pre-create the topic with the AWS CLI /
-# MAGIC `kafka-topics.sh` using the `msk_kafka` IAM role, or ask the MSK admin. Partition guidance:
-# MAGIC 6 partitions, replication factor 3.
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Next → notebook 02
-# MAGIC Register this topic as a governed stream, then define RollingWindow features:
-# MAGIC ```python
-# MAGIC fe.create_stream(
-# MAGIC     name=f"{catalog}.{schema}.session_events_stream",
-# MAGIC     source_config=KafkaStreamConfig(
-# MAGIC         subscription_mode=KafkaSubscriptionMode(subscribe="nbo-session-events")),
-# MAGIC     connection_config=StreamConnectionConfig(uc_connection_name="msk_kafka"),
-# MAGIC     schema_config=DirectSchemas(payload_schema=SchemaConfig(json_schema="{...}")),
-# MAGIC     ingestion_config=IngestionConfig(
-# MAGIC         ingestion_destination=IngestionDestination(
-# MAGIC             delta_table_name=f"{catalog}.{schema}.session_events_ingest"),
-# MAGIC         deduplication_columns=["value.event_id"]),
-# MAGIC )
-# MAGIC ```
+    # q.awaitTermination()
