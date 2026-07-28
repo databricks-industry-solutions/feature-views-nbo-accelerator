@@ -36,6 +36,7 @@ fe = FeatureEngineeringClient()
 
 # COMMAND ----------
 # MAGIC %md ## Fetch the features registered in notebook 02
+# COMMAND ----------
 def gf(name):
     return fe.get_feature(full_name=f"{catalog}.{schema}.{name}")
 
@@ -44,6 +45,7 @@ attr_features = [gf("cust_loyalty_tier"), gf("cust_risk_band")]
 
 # COMMAND ----------
 # MAGIC %md ## Aggregation features → offline Delta + online Lakebase (CronSchedule + backfill)
+# COMMAND ----------
 fe.materialize_features(
     features=agg_features,
     offline_config=OfflineStoreConfig(catalog, schema, "nbo_off"),
@@ -53,6 +55,7 @@ fe.materialize_features(
 
 # COMMAND ----------
 # MAGIC %md ## ColumnSelection features → online-only (TableTrigger)
+# COMMAND ----------
 fe.materialize_features(
     features=attr_features,
     online_config=OnlineStoreConfig(catalog, schema, "nbo_on", osn),
@@ -61,6 +64,7 @@ fe.materialize_features(
 
 # COMMAND ----------
 # MAGIC %md ## Inspect the provisioned pipelines
+# COMMAND ----------
 for f in ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
           "cust_loyalty_tier", "cust_risk_band"]:
     for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.{f}"):

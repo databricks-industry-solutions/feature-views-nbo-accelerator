@@ -30,6 +30,7 @@ mlflow.set_registry_uri("databricks-uc")
 # MAGIC %md ## Point-in-time training set from the registered Feature objects
 # MAGIC `create_training_set` joins each feature as-of each label row's timestamp — no lookahead.
 # MAGIC ColumnSelection features key off `updated_at`, so we mirror `ts → updated_at` on the labels.
+# COMMAND ----------
 def gf(name):
     return fe.get_feature(full_name=f"{catalog}.{schema}.{name}")
 
@@ -50,6 +51,7 @@ print(f"rows={len(tdf):,}  accept_rate={tdf['accepted'].mean():.3f}")
 
 # COMMAND ----------
 # MAGIC %md ## Train LightGBM (ordinal-encode categoricals, passthrough numerics)
+# COMMAND ----------
 import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
@@ -82,6 +84,7 @@ model = Pipeline([
 
 # COMMAND ----------
 # MAGIC %md ## Log with feature metadata + register to UC with @prod alias
+# COMMAND ----------
 MODEL_NAME = f"{catalog}.{schema}.nbo_ranker"
 
 with mlflow.start_run(run_name="nbo_ranker") as run:

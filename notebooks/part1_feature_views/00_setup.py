@@ -27,6 +27,7 @@ spark.sql(f"USE {catalog}.{schema}")
 # COMMAND ----------
 # MAGIC %md ## Create the Lakebase online store
 # MAGIC Name must be DNS-compliant: lowercase, alphanumeric + hyphens, **no underscores**.
+# COMMAND ----------
 from databricks.feature_engineering import FeatureEngineeringClient
 
 fe = FeatureEngineeringClient()

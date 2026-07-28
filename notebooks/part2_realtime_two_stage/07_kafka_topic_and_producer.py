@@ -58,6 +58,7 @@ print("bootstrap:", BOOTSTRAP, "| region:", REGION)
 
 # COMMAND ----------
 # MAGIC %md ## 1 · Create the topic (idempotent) — temp AWS creds + Kafka AdminClient (MSK IAM)
+# COMMAND ----------
 import requests
 
 resp = requests.post(
@@ -94,6 +95,7 @@ else:
 
 # COMMAND ----------
 # MAGIC %md ## 2 · Synthetic event schema (matches the Stream's JSON Schema in notebook 08)
+# COMMAND ----------
 N_CUSTOMERS = 100_000
 EVENT_TYPES = ["page_view", "product_view", "calculator_use", "add_to_cart", "search"]
 CATS = ["credit_card", "savings", "personal_loan", "mortgage", "investment"]
@@ -116,6 +118,7 @@ KAFKA_OPTS = {"kafka.bootstrap.servers": BOOTSTRAP, "databricks.serviceCredentia
 
 # COMMAND ----------
 # MAGIC %md ## 3a · Bounded produce (run AFTER notebook 08 so the ingestion pipeline captures it)
+# COMMAND ----------
 if mode == "bounded":
     events = to_events(spark.range(0, num_events).withColumnRenamed("id", "seq"), "seq")
     events.write.format("kafka").options(**KAFKA_OPTS).option("topic", topic).save()
@@ -123,6 +126,7 @@ if mode == "bounded":
 
 # COMMAND ----------
 # MAGIC %md ## 3b · Continuous produce (live demo + freshness benchmark)
+# COMMAND ----------
 if mode == "continuous":
     checkpoint = f"/Volumes/{catalog}/{schema}/checkpoints/kafka_producer"
     rate = spark.readStream.format("rate").option("rowsPerSecond", events_per_sec).load().withColumnRenamed("value", "seq")

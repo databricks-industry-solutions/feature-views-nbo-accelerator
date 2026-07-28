@@ -55,6 +55,7 @@ INGEST_TABLE = f"{catalog}.{schema}.session_events_ingest"
 # MAGIC %md ## 1 · Create the Stream (per docs: this starts the managed ingestion pipeline)
 # MAGIC Schema is **JSON Schema** format. `event_time` is a date-time string so the FV timeseries
 # MAGIC column is TIMESTAMP.
+# COMMAND ----------
 PAYLOAD_JSON_SCHEMA = (
     '{'
     '  "type": "object",'
@@ -94,6 +95,7 @@ except Exception:
 # MAGIC %md ## 2 · Define the streaming feature (RollingWindow over the StreamSource)
 # MAGIC Column refs use the `value.` prefix (Kafka payload). Only `RollingWindow` is supported for
 # MAGIC streaming aggregations.
+# COMMAND ----------
 stream_source = StreamSource(full_name=STREAM_NAME)
 
 clicks_10m = fe.create_feature(
@@ -114,6 +116,7 @@ print("Created streaming feature cust_clicks_10m.")
 # MAGIC %md ## 3 · Materialize online-only with StreamingMode
 # MAGIC Streaming features are online-only; `StreamingMode()` runs the continuous materialization
 # MAGIC to the Lakebase online store.
+# COMMAND ----------
 fe.materialize_features(
     features=[clicks_10m],
     online_config=OnlineStoreConfig(
@@ -129,6 +132,7 @@ print("Materialized cust_clicks_10m online with StreamingMode.")
 # MAGIC Per docs, `create_stream` starts the ingestion pipeline automatically. If it's still IDLE,
 # MAGIC start it explicitly. Then produce events (notebook 07) — the pipeline reads from the latest
 # MAGIC offset, so only events produced *after* it is RUNNING are captured.
+# COMMAND ----------
 from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()

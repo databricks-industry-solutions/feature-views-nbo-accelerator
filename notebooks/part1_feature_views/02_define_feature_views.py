@@ -37,6 +37,7 @@ fe = FeatureEngineeringClient()
 
 # COMMAND ----------
 # MAGIC %md ## Sources — entity/timeseries live on the Feature, not the source
+# COMMAND ----------
 txn_source = DeltaTableSource(catalog_name=catalog, schema_name=schema,
                               table_name="transactions", filter_condition="amount > 0")
 cust_source = DeltaTableSource(catalog_name=catalog, schema_name=schema, table_name="customers")
@@ -45,6 +46,7 @@ cust_source = DeltaTableSource(catalog_name=catalog, schema_name=schema, table_n
 # MAGIC %md ## Windowed aggregation features
 # MAGIC `AggregationFunction(operator=..., time_window=...)` — window lives *inside* the
 # MAGIC aggregation. Sliding = overlapping (recomputed each slide); Tumbling = fixed buckets.
+# COMMAND ----------
 avg_balance_30d = fe.create_feature(
     source=txn_source, entity=["customer_id"], timeseries_column="ts",
     function=AggregationFunction(
@@ -69,6 +71,7 @@ txn_count_7d = fe.create_feature(
 
 # COMMAND ----------
 # MAGIC %md ## Latest-attribute features (ColumnSelection — no window)
+# COMMAND ----------
 loyalty_tier = fe.create_feature(
     source=cust_source, entity=["customer_id"], timeseries_column="updated_at",
     function=ColumnSelection(column="loyalty_tier"),
@@ -82,6 +85,7 @@ risk_band = fe.create_feature(
 
 # COMMAND ----------
 # MAGIC %md ## Validate — `compute_features` previews values (no persistence, no lineage)
+# COMMAND ----------
 agg_features = [avg_balance_30d, spend_90d, txn_count_7d]
 attr_features = [loyalty_tier, risk_band]
 

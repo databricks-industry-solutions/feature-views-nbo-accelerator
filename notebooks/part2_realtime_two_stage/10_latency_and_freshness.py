@@ -44,6 +44,7 @@ def pct(a, p):
 # MAGIC %md ## 1 · Serving latency — online feature-read + rank-all (no retrieval)
 # MAGIC Request carries only `customer_id` + offer fields; the endpoint looks up all 6 customer
 # MAGIC features (incl. streaming `cust_clicks_10m`) online and scores the full offer catalog.
+# COMMAND ----------
 offers = [r.asDict() for r in spark.table(f"`{catalog}`.{schema}.offers").collect()]
 customers = [r.asDict() for r in
              spark.table(f"`{catalog}`.{schema}.customers").select("customer_id").limit(200).collect()]
@@ -80,6 +81,7 @@ print("NOTE: measured from this driver; subtract cross-region WAN RTT for the in
 # MAGIC Emit a marker event to Kafka for a probe customer, then poll the online-store feature
 # MAGIC value until `cust_clicks_10m` reflects it, timing the gap. Requires the streaming
 # MAGIC materialization (notebook 08) to be running and continuously consuming the topic.
+# COMMAND ----------
 from databricks.feature_engineering import FeatureEngineeringClient
 from pyspark.sql import functions as F
 
@@ -133,6 +135,7 @@ else:
 
 # COMMAND ----------
 # MAGIC %md ## Persist results to Delta for the dashboard
+# COMMAND ----------
 rows = [{"stage": "feature_read_and_rank", "p50": serving["p50"],
          "p95": serving["p95"], "p99": serving["p99"]}]
 if freshness_ms:

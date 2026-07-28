@@ -24,6 +24,7 @@ spark.sql(f"USE `{catalog}`.{schema}")
 
 # COMMAND ----------
 # MAGIC %md ## Scale knobs
+# COMMAND ----------
 N_CUSTOMERS = 100_000
 N_OFFERS = 40
 N_TRANSACTIONS = 5_000_000
@@ -32,6 +33,7 @@ N_LABELS = 400_000
 
 # COMMAND ----------
 # MAGIC %md ## Customers — latest-attribute source (ColumnSelection features read this)
+# COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE customers AS
 SELECT concat('cust_', id) AS customer_id,
@@ -47,6 +49,7 @@ FROM range(0, {N_CUSTOMERS}) AS t(id)
 
 # COMMAND ----------
 # MAGIC %md ## Offers — NBO catalog; `offer_text` feeds Vector Search embeddings (nb 05)
+# COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE offers AS
 SELECT concat('offer_', id) AS offer_id,
@@ -71,6 +74,7 @@ FROM range(0, {N_OFFERS}) AS t(id)
 
 # COMMAND ----------
 # MAGIC %md ## Transactions — batch history for SlidingWindow / TumblingWindow features
+# COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE transactions AS
 SELECT concat('txn_', id) AS txn_id,
@@ -86,6 +90,7 @@ FROM range(0, {N_TRANSACTIONS}) AS t(id)
 # COMMAND ----------
 # MAGIC %md ## Session events — in-session clickstream (RollingWindow streaming features)
 # MAGIC `event_time` is the event-time column; notebook 01b replays these into Kafka/MSK.
+# COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE session_events AS
 SELECT concat('evt_', id) AS event_id,
@@ -106,6 +111,7 @@ FROM range(0, {N_SESSION_EVENTS}) AS t(id)
 # MAGIC Acceptance carries **real signal** (a logistic model of loyalty tier, risk band, income,
 # MAGIC tenure, and offer reward-vs-tier fit) so the ranker learns something meaningful
 # MAGIC (val AUC ≈ 0.70), not noise. ~36% base accept rate.
+# COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE labels AS
 WITH base AS (
@@ -141,6 +147,7 @@ FROM scored
 
 # COMMAND ----------
 # MAGIC %md ## Verify
+# COMMAND ----------
 for t in ["customers", "offers", "transactions", "session_events", "labels"]:
     print(f"{t:16s} {spark.table(t).count():>12,}")
 display(spark.sql("SELECT round(avg(accepted),4) AS accept_rate FROM labels"))

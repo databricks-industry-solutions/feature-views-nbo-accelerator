@@ -40,6 +40,7 @@ dp = w.serving_endpoints_data_plane
 
 # COMMAND ----------
 # MAGIC %md ## Candidate set = the full offer catalog; customer features looked up online by key
+# COMMAND ----------
 offers = [r.asDict() for r in spark.table(f"`{catalog}`.{schema}.offers").collect()]
 customers = [r.asDict() for r in
              spark.table(f"`{catalog}`.{schema}.customers").select(
@@ -60,6 +61,7 @@ def rank(customer_id):
 
 # COMMAND ----------
 # MAGIC %md ## Warm, then benchmark
+# COMMAND ----------
 for i in range(12):
     rank(customers[i % len(customers)]["customer_id"])
 
@@ -79,6 +81,7 @@ print("NOTE: measured from this driver; subtract cross-region WAN RTT for the in
 
 # COMMAND ----------
 # MAGIC %md ## Persist results to Delta for the dashboard
+# COMMAND ----------
 import pandas as pd
 rows = [{"stage": "feature_read_and_rank", "p50": pct(lat, 50), "p95": pct(lat, 95), "p99": pct(lat, 99)}]
 (spark.createDataFrame(pd.DataFrame(rows))

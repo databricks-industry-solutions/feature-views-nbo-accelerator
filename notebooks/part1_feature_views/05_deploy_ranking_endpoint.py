@@ -47,6 +47,7 @@ fe = FeatureEngineeringClient()
 
 # COMMAND ----------
 # MAGIC %md ## Features: 5 customer features (online lookup) + 4 offer columns (RequestSource)
+# COMMAND ----------
 def gf(n):
     return fe.get_feature(full_name=f"{catalog}.{schema}.{n}")
 
@@ -74,6 +75,7 @@ offer_feats = [get_or_create_req(c) for c in
 
 # COMMAND ----------
 # MAGIC %md ## Point-in-time training set + train
+# COMMAND ----------
 labels = spark.table(f"`{catalog}`.{schema}.labels").withColumn("updated_at", F.col("ts"))
 offers = spark.table(f"`{catalog}`.{schema}.offers").select(
     "offer_id", "product_category", "base_reward", "tier_requirement")
@@ -108,6 +110,7 @@ print("val_auc:", roc_auc_score(yte, model.predict_proba(Xte)[:, 1]))
 
 # COMMAND ----------
 # MAGIC %md ## Log with feature metadata → register → deploy route-optimized
+# COMMAND ----------
 MODEL = f"{catalog}.{schema}.nbo_ranker_online"
 with mlflow.start_run(run_name="nbo_ranker_online_lookup"):
     fe.log_model(model=model, artifact_path="model", flavor=mlflow.sklearn,
