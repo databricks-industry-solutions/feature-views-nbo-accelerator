@@ -98,34 +98,44 @@ except Exception:
 # COMMAND ----------
 stream_source = StreamSource(full_name=STREAM_NAME)
 
-clicks_10m = fe.create_feature(
-    name="cust_clicks_10m",
-    source=stream_source,
-    entity=["value.customer_id"],
-    timeseries_column="value.event_time",
-    function=AggregationFunction(
-        operator=Count(input="value.event_id"),
-        time_window=RollingWindow(window_duration=timedelta(minutes=10)),
-    ),
-    catalog_name=catalog,
-    schema_name=schema,
-)
-print("Created streaming feature cust_clicks_10m.")
+# Idempotent: get the feature if it already exists, else create it (re-runnable notebook).
+try:
+    clicks_10m = fe.get_feature(full_name=f"{catalog}.{schema}.cust_clicks_10m")
+    print("Streaming feature cust_clicks_10m already exists.")
+except Exception:
+    clicks_10m = fe.create_feature(
+        name="cust_clicks_10m",
+        source=stream_source,
+        entity=["value.customer_id"],
+        timeseries_column="value.event_time",
+        function=AggregationFunction(
+            operator=Count(input="value.event_id"),
+            time_window=RollingWindow(window_duration=timedelta(minutes=10)),
+        ),
+        catalog_name=catalog,
+        schema_name=schema,
+    )
+    print("Created streaming feature cust_clicks_10m.")
 
 # COMMAND ----------
 # MAGIC %md ## 3 · Materialize online-only with StreamingMode
 # MAGIC Streaming features are online-only; `StreamingMode()` runs the continuous materialization
 # MAGIC to the Lakebase online store.
 # COMMAND ----------
-fe.materialize_features(
-    features=[clicks_10m],
-    online_config=OnlineStoreConfig(
-        catalog_name=catalog, schema_name=schema,
-        table_name_prefix="nbo_stream_serving", online_store_name=osn,
-    ),
-    trigger=StreamingMode(),
-)
-print("Materialized cust_clicks_10m online with StreamingMode.")
+# Idempotent: only materialize if not already materialized online (re-runnable notebook).
+already = [m for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.cust_clicks_10m") if m.is_online]
+if already:
+    print(f"cust_clicks_10m already materialized online -> {already[0].table_name}")
+else:
+    fe.materialize_features(
+        features=[clicks_10m],
+        online_config=OnlineStoreConfig(
+            catalog_name=catalog, schema_name=schema,
+            table_name_prefix="nbo_stream_serving", online_store_name=osn,
+        ),
+        trigger=StreamingMode(),
+    )
+    print("Materialized cust_clicks_10m online with StreamingMode.")
 
 # COMMAND ----------
 # MAGIC %md ## 4 · Verify the ingestion pipeline is RUNNING
