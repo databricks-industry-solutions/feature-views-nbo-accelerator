@@ -16,7 +16,7 @@
 # MAGIC **Label columns must NOT exist in any feature source table** (they don't here).
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "fins-industry-solutions")
+dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "nbo")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")

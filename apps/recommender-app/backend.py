@@ -16,7 +16,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
 from databricks import sql
 
-CATALOG = os.getenv("CATALOG", "fins-industry-solutions")
+CATALOG = os.getenv("CATALOG", "fins_industry_solutions")
 SCHEMA = os.getenv("SCHEMA", "nbo")
 VS_ENDPOINT = os.getenv("VS_ENDPOINT", "nbo-vs-endpoint")
 VS_INDEX = os.getenv("VS_INDEX", f"{CATALOG}.{SCHEMA}.offers_index")

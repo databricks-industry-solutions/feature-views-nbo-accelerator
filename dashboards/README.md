@@ -11,7 +11,7 @@ definition; deploy it after Part 2 notebook 11 populates `latency_results`.
   (platinum ~60% → bronze ~26%).
 - **Offer catalog by category** + **latency percentile table** — recommendation catalog and detail.
 
-Source: `fins-industry-solutions.nbo` — `latency_results`, `labels` × `customers`, `offers`.
+Source: `fins_industry_solutions.nbo` — `latency_results`, `labels` × `customers`, `offers`.
 
 ## Deploy
 Queries are validated against the live tables. Deploy on `fe-vm-ttan-vm`:

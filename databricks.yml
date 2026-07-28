@@ -9,7 +9,7 @@ include:
 variables:
   catalog:
     description: Unity Catalog catalog (standard storage — required for streaming Feature Views)
-    default: fins-industry-solutions
+    default: fins_industry_solutions
   schema:
     description: Schema for all accelerator assets
     default: nbo

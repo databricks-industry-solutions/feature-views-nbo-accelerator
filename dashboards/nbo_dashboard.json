@@ -5,10 +5,10 @@
       "displayName": "Summary KPIs",
       "queryLines": [
         "SELECT ",
-        "  (SELECT COUNT(*) FROM `fins-industry-solutions`.nbo.customers) AS customers, ",
-        "  (SELECT COUNT(*) FROM `fins-industry-solutions`.nbo.transactions) AS transactions, ",
-        "  (SELECT ROUND(AVG(accepted),4) FROM `fins-industry-solutions`.nbo.labels) AS accept_rate, ",
-        "  (SELECT CAST(p95 AS DOUBLE) FROM `fins-industry-solutions`.nbo.latency_results WHERE stage='e2e') AS e2e_p95_ms"
+        "  (SELECT COUNT(*) FROM fins_industry_solutions.nbo.customers) AS customers, ",
+        "  (SELECT COUNT(*) FROM fins_industry_solutions.nbo.transactions) AS transactions, ",
+        "  (SELECT ROUND(AVG(accepted),4) FROM fins_industry_solutions.nbo.labels) AS accept_rate, ",
+        "  (SELECT CAST(p95 AS DOUBLE) FROM fins_industry_solutions.nbo.latency_results WHERE stage='e2e') AS e2e_p95_ms"
       ]
     },
     {
@@ -19,7 +19,7 @@
         "  CAST(p50 AS DOUBLE) AS p50, ",
         "  CAST(p95 AS DOUBLE) AS p95, ",
         "  CAST(p99 AS DOUBLE) AS p99 ",
-        "FROM `fins-industry-solutions`.nbo.latency_results ",
+        "FROM fins_industry_solutions.nbo.latency_results ",
         "ORDER BY stage"
       ]
     },
@@ -29,8 +29,8 @@
       "queryLines": [
         "SELECT c.loyalty_tier AS loyalty_tier, ",
         "  ROUND(AVG(l.accepted),4) AS accept_rate ",
-        "FROM `fins-industry-solutions`.nbo.labels l ",
-        "JOIN `fins-industry-solutions`.nbo.customers c ON l.customer_id = c.customer_id ",
+        "FROM fins_industry_solutions.nbo.labels l ",
+        "JOIN fins_industry_solutions.nbo.customers c ON l.customer_id = c.customer_id ",
         "GROUP BY c.loyalty_tier"
       ]
     },
@@ -39,7 +39,7 @@
       "displayName": "Offers by product category",
       "queryLines": [
         "SELECT product_category, COUNT(*) AS n_offers ",
-        "FROM `fins-industry-solutions`.nbo.offers ",
+        "FROM fins_industry_solutions.nbo.offers ",
         "GROUP BY product_category ",
         "ORDER BY n_offers DESC"
       ]
@@ -61,7 +61,7 @@
         {
           "widget": {
             "name": "subtitle",
-            "multilineTextboxSpec": {"lines": ["Feature freshness, serving latency vs the 300ms budget, and recommendation quality. Data: `fins-industry-solutions.nbo`."]}
+            "multilineTextboxSpec": {"lines": ["Feature freshness, serving latency vs the 300ms budget, and recommendation quality. Data: `fins_industry_solutions.nbo`."]}
           },
           "position": {"x": 0, "y": 1, "width": 6, "height": 1}
         },

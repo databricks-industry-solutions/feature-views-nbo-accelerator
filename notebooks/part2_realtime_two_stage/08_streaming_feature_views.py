@@ -7,7 +7,7 @@
 # MAGIC
 # MAGIC **Prereqs**
 # MAGIC - Notebook 07 has produced events to the `nbo-session-events` topic on `msk_kafka`.
-# MAGIC - Catalog on **standard storage** (`fins-industry-solutions` qualifies) — streaming FVs
+# MAGIC - Catalog on **standard storage** (fins_industry_solutions qualifies) — streaming FVs
 # MAGIC   cannot use default storage.
 # MAGIC - `databricks-feature-engineering>=0.16.0` on **serverless (latest env)**.
 # MAGIC
@@ -26,7 +26,7 @@
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "fins-industry-solutions")
+dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "nbo")
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")

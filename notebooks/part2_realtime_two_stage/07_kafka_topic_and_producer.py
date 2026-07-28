@@ -23,7 +23,7 @@
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "fins-industry-solutions")
+dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "nbo")
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("service_credential", "msk_kafka")

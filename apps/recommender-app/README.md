@@ -42,4 +42,4 @@ and grant the app's service principal `SELECT` on the catalog and `Can Query` on
 - Resources wired: `sql-warehouse` → warehouse `2a0b73493fe19b04` (CAN_USE),
   `serving-endpoint` → `nbo-ranker-online` (CAN_QUERY).
 - App service principal granted `USE_CATALOG`/`USE_SCHEMA`/`SELECT` on
-  `fins-industry-solutions` and `SELECT` on `offers_index`.
+  fins_industry_solutions and `SELECT` on `offers_index`.

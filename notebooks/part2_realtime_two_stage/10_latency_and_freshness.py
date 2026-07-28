@@ -16,7 +16,7 @@
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "fins-industry-solutions")
+dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "nbo")
 dbutils.widgets.text("ranker_endpoint", "nbo-ranker-realtime")
 dbutils.widgets.text("kafka_connection", "msk_kafka")
