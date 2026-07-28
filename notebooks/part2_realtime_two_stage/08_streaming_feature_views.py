@@ -109,7 +109,28 @@ fe.materialize_features(
     online_config=OnlineStoreConfig(catalog, schema, "nbo_stream", osn),
     trigger=StreamingMode(),
 )
-print("Streaming materialization started for cust_clicks_10m.")
+print("Streaming materialization registered for cust_clicks_10m.")
+
+# COMMAND ----------
+# MAGIC %md ## 4 · Start the ingestion pipeline (Kafka → ingest Delta table)
+# MAGIC **Important gotcha:** `create_stream` + `materialize_features(StreamingMode())` *register* the
+# MAGIC continuous ingestion pipeline but leave it **IDLE** — it does not auto-start. Until you kick
+# MAGIC off its first update, the Kafka→Delta ingestion never runs, so `session_events_ingest` stays
+# MAGIC empty (a UC table entry with no data files) and downstream `create_training_set` /
+# MAGIC online lookups see nothing. Start it explicitly here.
+from databricks.sdk import WorkspaceClient
+
+w = WorkspaceClient()
+stream = w.feature_engineering.get_stream(name=STREAM_NAME)
+ingestion_pipeline_id = stream.ingestion_config.ingestion_pipeline_id
+p = w.pipelines.get(pipeline_id=ingestion_pipeline_id)
+if str(p.state) not in ("PipelineState.RUNNING", "RUNNING"):
+    w.pipelines.start_update(pipeline_id=ingestion_pipeline_id)
+    print(f"Started ingestion pipeline {ingestion_pipeline_id} (Kafka -> {catalog}.{schema}.session_events_ingest).")
+else:
+    print(f"Ingestion pipeline {ingestion_pipeline_id} already RUNNING.")
+# It's a continuous pipeline: once RUNNING it keeps consuming the topic. Give it a few minutes to
+# provision compute and land the first rows before running notebook 09 / the freshness benchmark.
 
 # COMMAND ----------
 # MAGIC %md
