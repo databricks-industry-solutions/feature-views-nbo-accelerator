@@ -1,22 +1,26 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Part 2 · 07 · Kafka Topic + Synthetic Stream Producer
-# MAGIC Creates the MSK topic and produces synthetic in-session clickstream events that back the
-# MAGIC `RollingWindow` streaming feature (notebook 08) — the customer's **freshest in-session intent**.
+# MAGIC # Part 2 · 07 · Kafka Topic + Synthetic In-Session Event Producer
+# MAGIC Produces synthetic clickstream events into the MSK topic that backs the streaming
+# MAGIC Feature View (notebook 08). Follows the Databricks Feature Views streaming docs:
+# MAGIC <https://docs.databricks.com/aws/en/machine-learning/feature-store/streams>
 # MAGIC
-# MAGIC **Verified end-to-end on `fe-vm-ttan-vm`.** Auth uses the UC Kafka connection **`msk_kafka`**
-# MAGIC (AWS MSK, IAM, public-TLS :9198) backed by the UC **service credential `msk_kafka`**.
+# MAGIC **Auth (verified on `fe-vm-ttan-vm`):** UC Kafka connection **`msk_kafka`** (AWS MSK, IAM,
+# MAGIC public-TLS :9198), backed by UC **service credential `msk_kafka`**.
 # MAGIC
-# MAGIC Two auth paths, each for what it's good at:
+# MAGIC Two auth paths, each for its job:
 # MAGIC - **Producing** (Spark `write`) → `.option("databricks.serviceCredential", "msk_kafka")`.
-# MAGIC   Databricks mints the MSK IAM token; **do NOT also set** `kafka.security.protocol` /
+# MAGIC   Databricks mints the MSK IAM token; do **not** also set `kafka.security.protocol` /
 # MAGIC   `kafka.sasl.mechanism` (rejected as conflicting when a service credential is used).
 # MAGIC - **Topic admin** (create topic) → the Spark connector can't do admin ops, so we fetch
 # MAGIC   temporary AWS creds from the service credential and use a Kafka `AdminClient` with the
-# MAGIC   AWS MSK IAM signer. (MSK here has auto-create disabled, so the topic must be pre-created.)
+# MAGIC   AWS MSK IAM signer. (This MSK cluster has auto-create disabled, so the topic is pre-created.)
 # MAGIC
-# MAGIC **Gotcha:** `event_time` must be an **ISO-8601 timestamp string** — the streaming FV's
-# MAGIC timeseries column must be TIMESTAMP, and epoch-millis integers are rejected (notebook 08).
+# MAGIC **Doc-critical:** the Stream's ingestion pipeline reads from the **latest Kafka offset**, so
+# MAGIC events must be produced *after* the stream exists (notebook 08), or supplied via a backfill
+# MAGIC source. For the demo we run this producer in `continuous` mode after notebook 08 is live.
+# MAGIC `event_time` is emitted as an **ISO-8601 timestamp string** (the streaming FV timeseries
+# MAGIC column must be TIMESTAMP; the JSON Schema declares `format: date-time`).
 
 # COMMAND ----------
 # MAGIC %pip install confluent-kafka aws-msk-iam-sasl-signer-python
@@ -89,10 +93,7 @@ else:
         print(f"Created topic '{t}'.")
 
 # COMMAND ----------
-# MAGIC %md ## 2 · Synthetic event schema
-# MAGIC Mirrors the `session_events` batch table. `event_time` is an ISO-8601 string so the
-# MAGIC streaming FV can treat it as TIMESTAMP. Kafka `value` is JSON; notebook 08 exposes fields
-# MAGIC under `value.*`.
+# MAGIC %md ## 2 · Synthetic event schema (matches the Stream's JSON Schema in notebook 08)
 N_CUSTOMERS = 100_000
 EVENT_TYPES = ["page_view", "product_view", "calculator_use", "add_to_cart", "search"]
 CATS = ["credit_card", "savings", "personal_loan", "mortgage", "investment"]
@@ -114,7 +115,7 @@ def to_events(df, id_col):
 KAFKA_OPTS = {"kafka.bootstrap.servers": BOOTSTRAP, "databricks.serviceCredential": service_credential}
 
 # COMMAND ----------
-# MAGIC %md ## 3a · Bounded produce (seed the topic)
+# MAGIC %md ## 3a · Bounded produce (run AFTER notebook 08 so the ingestion pipeline captures it)
 if mode == "bounded":
     events = to_events(spark.range(0, num_events).withColumnRenamed("id", "seq"), "seq")
     events.write.format("kafka").options(**KAFKA_OPTS).option("topic", topic).save()
