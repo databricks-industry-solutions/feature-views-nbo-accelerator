@@ -138,11 +138,15 @@ else:
     print("Materialized cust_clicks_10m online with StreamingMode.")
 
 # COMMAND ----------
-# MAGIC %md ## 4 · Verify the ingestion pipeline is RUNNING
-# MAGIC Per docs, `create_stream` starts the ingestion pipeline automatically. If it's still IDLE,
-# MAGIC start it explicitly. Then produce events (notebook 07) — the pipeline reads from the latest
-# MAGIC offset, so only events produced *after* it is RUNNING are captured.
+# MAGIC %md ## 4 · Block until the ingestion pipeline is RUNNING (gate before producing)
+# MAGIC Per docs, `create_stream` starts the ingestion pipeline automatically, but it reads from the
+# MAGIC **latest Kafka offset** — so only events produced *after* it is RUNNING are captured. In a job
+# MAGIC DAG this task therefore must **not** return until the pipeline is RUNNING; otherwise the
+# MAGIC downstream producer (07) would feed events the pipeline can never see. We start it if IDLE and
+# MAGIC poll until RUNNING (or fail loudly on FAILED), so the `depends_on` producer only runs once the
+# MAGIC pipeline is live.
 # COMMAND ----------
+import time
 from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
@@ -152,7 +156,21 @@ state = str(w.pipelines.get(pipeline_id=pid).state)
 print("ingestion_pipeline_id:", pid, "| state:", state)
 if "RUNNING" not in state:
     w.pipelines.start_update(pipeline_id=pid)
-    print("Started ingestion pipeline (allow ~5-7 min to reach RUNNING).")
+    print("Started ingestion pipeline; polling until RUNNING (allow ~5-7 min).")
+
+DEADLINE_S = 15 * 60
+POLL_S = 20
+start = time.time()
+while True:
+    state = str(w.pipelines.get(pipeline_id=pid).state)
+    if "RUNNING" in state:
+        print(f"Ingestion pipeline is RUNNING after {int(time.time() - start)}s. Safe to produce (07).")
+        break
+    if "FAILED" in state:
+        raise RuntimeError(f"Ingestion pipeline {pid} entered {state}; check the pipeline run for a validation error (see Pitfall #5).")
+    if time.time() - start > DEADLINE_S:
+        raise TimeoutError(f"Ingestion pipeline {pid} did not reach RUNNING within {DEADLINE_S}s (last state: {state}).")
+    time.sleep(POLL_S)
 
 # COMMAND ----------
 # MAGIC %md

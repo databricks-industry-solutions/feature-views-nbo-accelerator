@@ -70,21 +70,43 @@ personalization lives entirely in the ranker. VS is a documented catalog-scale e
 - ✅ **Streaming feature in TRAINING** — `cust_clicks_10m` RollingWindow feature reads its ingest
   table for point-in-time joins; 0% null; ranker trains on it.
 
-## 4. What does NOT work yet (the one open item)
+## 4. Streaming feature ONLINE materialization — ROOT-CAUSED (Eng-confirmed 2026-07-29): DBR-19 blocker
 
-- ❌ **Streaming feature ONLINE materialization** — `materialize_features(StreamingMode())` registers
-  the feature (`is_online=True`, `ACTIVE`, `mode=STREAMING_MODE_TYPE_RTM`) but the **online serving
-  table (`nbo_stream_serving_*`) stays at 0 rows**, `last_materialization_time=None`, and **no
-  materialization compute pipeline is ever provisioned**. So the endpoint can't serve a *live*
-  streaming feature value → **event→serving freshness (~200ms p99 story) can't be measured.**
+**Two independent problems existed. The orchestration bugs were real and are fixed. Underneath them
+sits a confirmed platform bug that no notebook change resolves — it needs DBR 19 (~2026-08-11).**
 
-  **Everything else was ruled out** (topic pollution, event format, offsets, stale window, hyphenated
-  catalog, validation errors, online-store config, feature definition — all fixed/verified). The online
-  store itself is proven working because **batch** features write to it (100K rows). This is isolated to
-  the RTM online-materialization step not producing on this workspace.
+### 4a. Orchestration bugs — FIXED (these were genuine and are proven by ingest filling 200K→400K)
+  1. **Producer ran BEFORE the stream existed** (`part2_job.yml` ran 07 then 08). The managed
+     ingestion pipeline reads from the **latest Kafka offset**, so pre-produced events are missed.
+     **Fix:** reorder to **08 → 07**.
+  2. **Producer `mode: bounded` with no live pipeline to catch it.** **Fix:** produce the bounded
+     burst *after* 08 confirms the pipeline is RUNNING. `continuous` is only for the demo notebook.
+  3. **08 fired `start_update` and returned immediately.** **Fix:** 08 now **blocks/polls until the
+     ingestion pipeline is RUNNING** before the task completes (notebook 08, cell 4).
+  4. **Online store was never created** — `00_setup.py` had `create_online_store` commented as TODO.
+     **Fix:** 00 now creates it idempotently.
 
-  **Next action:** escalate to the Feature Store / Eng team with the crisp repro below, OR try MBM mode
-  (see Pitfall #9). Do NOT keep brute-forcing — it's a preview-serving behavior, not a code bug on our side.
+### 4b. THE REAL BLOCKER — FS streaming sink emits a *quoted* schema identifier (Eng-confirmed)
+  After fixing all four orchestration bugs and running as the online-store owner (Sixuan), the online
+  table **still stayed at 0**. `materialize_features(StreamingMode())` registers the feature online
+  (`is_online=True`) but **no materialization pipeline is provisioned**. The SDP run's actual error:
+
+  > `terminated with exception: Invalid dbtable name '"nbo"'. Identifier parts must match [A-Za-z_][A-Za-z0-9_$]*`
+
+  The FS-generated JDBC sink emits `dbtable="nbo"."nbo_stream_serving_803t5r"` — i.e. it **double-quotes
+  the schema** (`"nbo"`). A UC identifier restriction introduced pre-DBR-19 rejects **quoted**
+  identifiers in FS streaming pipelines. Note `nbo` is already a clean simple identifier; the bug is the
+  sink quoting it, not the name. **A naming workaround does NOT help** (the schema is already clean).
+
+  **Eng (ian.ackerman, 2026-07-29, #apa-feature-store):** fixed in **DBR 19, targeted ~Aug 11**.
+  Restriction until then: *"Use simple identifiers that start with a letter or underscore and contain
+  only letters, numbers, and underscores; quoted identifiers and special characters, such as hyphens,
+  are not supported."*
+
+  **Status:** BLOCKED on DBR 19. Options meanwhile: (a) wait for DBR 19; (b) ask Eng whether the sink's
+  identifier-quoting can be disabled via a flag. Batch (Part 1) is unaffected (different write path).
+  The old "RTM vs MBM" theory (Pitfall #9) and the mid-investigation "hyphenated online-store name"
+  theory are BOTH disproven — the confirmed cause is the quoted-schema dbtable identifier above.
 
 ---
 
@@ -159,18 +181,21 @@ sidesteps it via a supported config, no monkeypatch.)
 - ColumnSelection PIT key: add `updated_at = ts` (and for streaming, `event_time = ts`) to the labels df
   or `create_training_set` errors on the missing timestamp key.
 
-### Pitfall 9 — `StreamingMode()` mode is server-defaulted to RTM; online table stays empty
-**Symptom:** `materialize_features(StreamingMode())` succeeds, feature is `ACTIVE`, but the online serving
-table is 0 rows forever, `last_materialization_time=None`, no materialization pipeline provisioned.
-**Findings:** the client `StreamingMode()` exposes only `pipeline_schedule_state` — **no way to pick
-MBM vs RTM**; its `_to_sdk()` sends an empty spec, so the server defaults to **`STREAMING_MODE_TYPE_RTM`**.
-The docs describe a continuous pipeline → Lakebase (~200ms), which matches **MBM**, not RTM.
-**Status: UNRESOLVED.** Candidate next steps (in order):
-  1. Escalate to Feature Store/Eng team with the repro (recommended — likely a preview enablement/behavior).
-  2. Try forcing **MBM**: the SDK-level `StreamingMode(mode=StreamingModeStreamingModeType.STREAMING_MODE_TYPE_MBM)`
-     accepts a mode arg even though the client wrapper doesn't wire it. (Reaching past the public wrapper —
-     verify it's supported before relying on it.)
-  3. Confirm with the team whether RTM online serving requires a workspace enablement flag.
+### Pitfall 9 — Online table stays empty → FS streaming sink quotes the schema identifier (DBR-19 bug)
+**Symptom:** `materialize_features(StreamingMode())` succeeds, feature is `is_online=True`, but the online
+serving table is 0 rows forever; `last_materialization_time=None`, `pipeline_id=None`, no materialization
+pipeline provisioned.
+**ROOT CAUSE (Eng-confirmed, 2026-07-29):** the FS-generated JDBC sink emits a **quoted** schema in the
+target dbtable — `dbtable="nbo"."nbo_stream_serving_*"` — and a pre-DBR-19 UC identifier restriction
+rejects quoted identifiers → SDP fails with `Invalid dbtable name '"nbo"'. Identifier parts must match
+[A-Za-z_][A-Za-z0-9_$]*`, so the pipeline never materializes. `nbo` itself is a valid simple identifier;
+the sink quoting it is the bug. **Fixed in DBR 19, targeted ~Aug 11** (ian.ackerman, #apa-feature-store).
+**Two earlier theories are DISPROVEN:** (1) "RTM vs MBM" — irrelevant; (2) "hyphenated online-store name"
+— a mid-investigation hypothesis that was confounded (failing runs had both a hyphen store and schema
+`nbo`); the actual failing token is the quoted `"nbo"` schema, not the store name. A naming workaround
+does NOT help. Meanwhile: wait for DBR 19, or ask Eng if the sink's identifier-quoting can be disabled.
+**Orchestration bugs (produce/stream order, task lifecycle, missing online store) were ALSO real and
+are fixed** — see § 4a; those are why ingest now fills, but they were necessary-not-sufficient.
 
 ### Pitfall 10 — Managed pipelines/jobs auto-start but can stall; inspect via FE API
 - `create_stream` auto-starts a **managed ingestion job** (`ingestion_job_id`) that runs a pipeline
