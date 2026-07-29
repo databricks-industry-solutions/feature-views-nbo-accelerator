@@ -18,7 +18,7 @@ win fast, then scale up to the full real-time recommender:
 |---|---|---|
 | **Goal** | Author once → train + serve, sub-50ms feature-read + rank | Freshest in-session intent as a streaming feature |
 | **Adds** | Batch feature views, online lookup, route-optimized ranking | Streaming (MSK) `RollingWindow` feature feeding the ranker |
-| **No** | Vector Search, streaming | Vector Search (rank-all; retrieval is out of scope) |
+| **Approach** | Batch features only (no streaming) | Rank-all: score every offer directly |
 | **Headline** | feature-read + rank **p50 < 50ms in-region** | feature-read + rank ≈15ms; freshness **~200ms p99** |
 | **Notebooks** | `notebooks/part1_feature_views/` (00–06) | `notebooks/part2_realtime_two_stage/` (07–10) |
 | **Job** | `resources/part1_job.yml` | `resources/part2_job.yml` (assumes Part 1 has run) |
@@ -41,7 +41,7 @@ feature definitions offline for model training** — eliminating train/serve ske
 ## Part 1 — Feature Views Fundamentals
 
 *Define a feature once. It powers point-in-time-correct training AND a sub-50ms online ranking
-endpoint — no train/serve skew, no retrieval machinery.*
+endpoint — no train/serve skew.*
 
 ```
 Delta: customers, transactions, offers, labels
@@ -59,7 +59,7 @@ Delta: customers, transactions, offers, labels
   (90-day spend), `ColumnSelection` (loyalty tier, risk band).
 - **Serving:** the request carries only `{customer_id, offer_id, offer attrs}`; the endpoint
   auto-fetches the customer features from the online store by `customer_id`. For the 40-offer
-  catalog you score all offers — **no retrieval needed**.
+  catalog you score every offer directly.
 - **Latency (measured):** online feature-read + rank **≈15ms in-region** (route-optimized endpoint,
   scale-to-zero off) — squarely in the personalization reference band (~10ms feature-read + ~30ms
   model-serving).
@@ -73,7 +73,7 @@ Delta: customers, transactions, offers, labels
 | 02 | `02_define_feature_views` | Batch features: Sliding / Tumbling / ColumnSelection |
 | 03 | `03_materialize_features` | Offline Delta + online Lakebase |
 | 04 | `04_train_ranker` | Point-in-time `create_training_set` → LightGBM → UC `@prod` |
-| 05 | `05_deploy_ranking_endpoint` | Route-optimized **online-lookup** ranker (no VS) |
+| 05 | `05_deploy_ranking_endpoint` | Route-optimized **online-lookup** ranker |
 | 06 | `06_latency_benchmark` | Feature-read + rank latency |
 
 ---
@@ -81,14 +81,14 @@ Delta: customers, transactions, offers, labels
 ## Part 2 — Real-Time Streaming Recommender
 
 *Capture the customer's freshest in-session intent — a streaming feature feeding the same ranker,
-scored in real time. No Vector Search: personalization lives entirely in the ranker.*
+scored in real time. Personalization lives entirely in the ranker.*
 
 ```
 in-session events ─► MSK (msk_kafka) ─► RollingWindow streaming FV (cust_clicks_10m) ─► online store
                                                                                           │
 Part 1 batch online features (5) ─────────────────────────────────────────────────────────┤ (6 online features)
                                                                                           ▼
-   request {customer_id, offer_id + offer attrs}   (all offers — rank-all, NO retrieval)
+   request {customer_id, offer_id + offer attrs}   (all offers — rank-all)
       │
       ▼  ONLINE LOOKUP of 6 customer features by customer_id (incl. live cust_clicks_10m)
       ▼  RANK on nbo-ranker-realtime (route-optimized)          ≈15ms in-region
@@ -100,8 +100,8 @@ Part 1 batch online features (5) ───────────────�
   freshest-intent differentiator. It's looked up online by `customer_id` like any batch feature.
 - **Ranker consumes it:** the ranker is re-logged (notebook 09) with `cust_clicks_10m` in the
   training set, so the endpoint fetches it live at serve time and it actually changes recommendations.
-- **Rank-all, no retrieval:** for the ~40-offer catalog we score every offer directly. Vector Search
-  would add ~90ms for no benefit at this catalog size — deliberately out of scope (see note below).
+- **Rank-all:** for the ~40-offer catalog we score every offer directly, so there's no candidate
+  narrowing step to add latency.
 - **Two numbers, kept honest and live-measured:** serving **feature-read + rank** (≈15ms in-region)
   *and* streaming freshness **event → online availability** (~200ms p99 reference), reported separately.
 
@@ -113,13 +113,6 @@ Part 1 batch online features (5) ───────────────�
 | 08 | `08_streaming_feature_views` | `RollingWindow` streaming FV (`cust_clicks_10m`) via `StreamingMode` |
 | 09 | `09_realtime_serving` | Re-log ranker with the streaming feature → route-optimized rank-all endpoint |
 | 10 | `10_latency_and_freshness` | Live serving latency + event→online freshness benchmark |
-
-### Why no Vector Search here (and when you'd add it)
-For the ~40-offer NBO catalog you can score every offer directly — retrieval adds a fixed ~90ms for
-no benefit and no accuracy gain (the ranker is the accuracy engine). Vector Search retrieval earns
-its place only at **catalog scale** (thousands of products / eligibility-scoped offers), where ANN
-narrows N→K to keep ranking cost bounded under the latency budget. That's a documented extension, not
-part of this real-time streaming demo.
 
 ---
 
