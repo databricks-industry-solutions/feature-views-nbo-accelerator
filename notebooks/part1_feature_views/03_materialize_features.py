@@ -43,24 +43,36 @@ def gf(name):
 agg_features = [gf("cust_avg_balance_30d"), gf("cust_spend_90d"), gf("cust_txn_count_7d")]
 attr_features = [gf("cust_loyalty_tier"), gf("cust_risk_band")]
 
+def already_materialized(feature_name: str) -> bool:
+    """Re-run guard: materialize_features is not idempotent, so skip features that already
+    have a materialization pipeline provisioned."""
+    return len(list(fe.list_materialized_features(
+        feature_name=f"{catalog}.{schema}.{feature_name}"))) > 0
+
 # COMMAND ----------
 # MAGIC %md ## Aggregation features → offline Delta + online Lakebase (CronSchedule + backfill)
 # COMMAND ----------
-fe.materialize_features(
-    features=agg_features,
-    offline_config=OfflineStoreConfig(catalog, schema, "nbo_off"),
-    online_config=OnlineStoreConfig(catalog, schema, "nbo_on", osn),
-    trigger=CronSchedule(quartz_cron_expression="0 0 0 * * ?", timezone_id="UTC"),
-)
+if all(already_materialized(f) for f in ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d"]):
+    print("Aggregation features already materialized — skipping.")
+else:
+    fe.materialize_features(
+        features=agg_features,
+        offline_config=OfflineStoreConfig(catalog, schema, "nbo_off"),
+        online_config=OnlineStoreConfig(catalog, schema, "nbo_on", osn),
+        trigger=CronSchedule(quartz_cron_expression="0 0 0 * * ?", timezone_id="UTC"),
+    )
 
 # COMMAND ----------
 # MAGIC %md ## ColumnSelection features → online-only (TableTrigger)
 # COMMAND ----------
-fe.materialize_features(
-    features=attr_features,
-    online_config=OnlineStoreConfig(catalog, schema, "nbo_on", osn),
-    trigger=TableTrigger(),
-)
+if all(already_materialized(f) for f in ["cust_loyalty_tier", "cust_risk_band"]):
+    print("Attribute features already materialized — skipping.")
+else:
+    fe.materialize_features(
+        features=attr_features,
+        online_config=OnlineStoreConfig(catalog, schema, "nbo_on", osn),
+        trigger=TableTrigger(),
+    )
 
 # COMMAND ----------
 # MAGIC %md ## Inspect the provisioned pipelines
@@ -73,7 +85,7 @@ for f in ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Streaming features (RollingWindow over MSK) — online-only via `StreamingMode`
-# MAGIC After registering the Kafka stream (notebook 01b + 02 streaming section):
+# MAGIC This is a Part 2 concern; see notebook 08 (currently gated — read its preflight cell):
 # MAGIC ```python
 # MAGIC from databricks.feature_engineering.entities import StreamingMode
 # MAGIC fe.materialize_features(

@@ -113,10 +113,25 @@ print("val_auc:", roc_auc_score(yte, model.predict_proba(Xte)[:, 1]))
 # COMMAND ----------
 # MAGIC %md ## Log with feature metadata → register → deploy route-optimized
 # COMMAND ----------
+# Pin the serving env explicitly (see notebook 04 for the rationale). Exact-pin
+# mlflow/sklearn/lightgbm; range-pin numpy/pandas below mlflow's caps. Do NOT add
+# databricks-feature-engineering — fe.log_model injects databricks-feature-lookup and
+# the two conflict.
+import sklearn, lightgbm
+pip_requirements = [
+    f"mlflow=={mlflow.__version__}",
+    f"scikit-learn=={sklearn.__version__}",
+    f"lightgbm=={lightgbm.__version__}",
+    "numpy>=1.26,<2",
+    "pandas>=2.1,<3",
+    "cloudpickle",
+]
+
 MODEL = f"{catalog}.{schema}.nbo_ranker_realtime"
 with mlflow.start_run(run_name="nbo_ranker_realtime"):
     fe.log_model(model=model, artifact_path="model", flavor=mlflow.sklearn,
                  training_set=ts, registered_model_name=MODEL,
+                 pip_requirements=pip_requirements,
                  skops_trusted_types=["collections.OrderedDict", "lightgbm.basic.Booster",
                      "lightgbm.sklearn.LGBMClassifier",
                      "sklearn.compose._column_transformer._RemainderColsList"])
@@ -140,6 +155,10 @@ else:
         config=EndpointCoreConfigInput(name=ENDPOINT, served_entities=served,
             traffic_config=TrafficConfig(routes=[Route(served_model_name=SERVED, traffic_percentage=100)])))
 print(f"Route-optimized endpoint '{ENDPOINT}' deploying {MODEL} v{newest.version}")
+
+# Endpoint deploy is async — block until READY so notebook 10's benchmark doesn't hit a cold endpoint.
+w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
+print(f"{ENDPOINT} is READY.")
 
 # COMMAND ----------
 # MAGIC %md ## Rank-all serving — request carries only customer_id + offer fields

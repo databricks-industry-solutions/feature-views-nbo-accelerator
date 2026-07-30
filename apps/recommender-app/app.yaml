@@ -1,21 +1,23 @@
 # Databricks App — Real-Time Next-Best-Offer demo (Streamlit).
 # Resources are wired via the Apps UI (Configure → + Add resource) and referenced
 # with valueFrom — never hardcode IDs.
-command: ["streamlit", "run", "app.py"]
+command:
+  - "streamlit"
+  - "run"
+  - "app.py"
+  - "--server.port"
+  - "8000"
+  - "--server.address"
+  - "0.0.0.0"
 
 env:
-  # SQL warehouse for reading offers/customers and the latency_results table.
+  # SQL warehouse for reading offers/customers and the part1_latency_results table.
   - name: DATABRICKS_WAREHOUSE_ID
     valueFrom: sql-warehouse
-  # Ranking model serving endpoint (nbo-ranker).
+  # Ranking model serving endpoint (nbo-ranker-online).
   - name: RANKER_ENDPOINT
     valueFrom: serving-endpoint
-  # Vector Search index for candidate retrieval (fins-industry-solutions.nbo.offers_index).
-  - name: VS_INDEX
-    value: "fins-industry-solutions.nbo.offers_index"
-  - name: VS_ENDPOINT
-    value: "nbo-vs-endpoint"
   - name: CATALOG
-    value: "fins-industry-solutions"
+    value: "fins_industry_solutions"
   - name: SCHEMA
     value: "nbo"

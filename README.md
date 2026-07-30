@@ -19,12 +19,20 @@ win fast, then scale up to the full real-time recommender:
 | **Goal** | Author once → train + serve, sub-50ms feature-read + rank | Freshest in-session intent as a streaming feature |
 | **Adds** | Batch feature views, online lookup, route-optimized ranking | Streaming (MSK) `RollingWindow` feature feeding the ranker |
 | **Approach** | Batch features only (no streaming) | Rank-all: score every offer directly |
-| **Headline** | feature-read + rank **p50 < 50ms in-region** | feature-read + rank ≈15ms; freshness **~200ms p99** |
+| **Headline** | feature-read + rank **p50 ≈ 15ms in-region** | streaming in-session feature feeding the same ranker |
 | **Notebooks** | `notebooks/part1_feature_views/` (00–06) | `notebooks/part2_realtime_two_stage/` (07–10) |
 | **Job** | `resources/part1_job.yml` | `resources/part2_job.yml` (assumes Part 1 has run) |
+| **Status** | ✅ runs end-to-end | ⚠️ **streaming online serving is gated** (see note below) |
 
 Both parts share one catalog and one set of feature definitions. Part 2 re-logs the ranker with the
 streaming `cust_clicks_10m` feature added — same online-lookup pattern, one more feature.
+
+> **⚠️ Part 2 status.** The streaming Feature View's *online* materialization (`StreamingMode()`,
+> notebook 08) does not populate the Lakebase online table on current serverless / pre-DBR-19
+> runtimes, so the live `cust_clicks_10m` feature does not yet reach the serving endpoint. Notebook 08
+> stops early with a clear message unless you explicitly opt in (`allow_streaming_online=true`) on a
+> supported runtime. **Part 1 is the fully-working path** and delivers the core Feature Views value
+> prop on its own.
 
 ---
 
@@ -102,8 +110,9 @@ Part 1 batch online features (5) ───────────────�
   training set, so the endpoint fetches it live at serve time and it actually changes recommendations.
 - **Rank-all:** for the ~40-offer catalog we score every offer directly, so there's no candidate
   narrowing step to add latency.
-- **Two numbers, kept honest and live-measured:** serving **feature-read + rank** (≈15ms in-region)
-  *and* streaming freshness **event → online availability** (~200ms p99 reference), reported separately.
+- **Two numbers, reported separately:** serving **feature-read + rank** (≈15ms in-region) *and*
+  streaming freshness **event → online availability**. The freshness number requires the gated
+  streaming online path (see the Part 2 status note above); serving latency is measured today in Part 1.
 
 **Notebooks** (`notebooks/part2_realtime_two_stage/`):
 
@@ -129,21 +138,44 @@ Part 1 batch online features (5) ───────────────�
 
 ## Getting started
 
-1. Clone this project into your Databricks workspace.
-2. Deploy the bundle: `databricks bundle deploy` (or the **Asset Bundle Editor**).
+1. Clone this repo and configure a Databricks CLI profile for your workspace
+   (`databricks auth login --host https://<your-workspace>.cloud.databricks.com -p <profile>`).
+2. Deploy the bundle, passing your workspace-specific values as variables (nothing
+   workspace-specific is committed — the host comes from your profile):
+   ```bash
+   databricks bundle deploy -t dev -p <profile> --var warehouse_id=<sql-warehouse-id>
+   ```
+   Override any variable with repeated `--var` flags (`--var catalog=… --var schema=…`).
+   For convenience, copy the git-ignored **`deploy.local.sh`** template, fill in your profile +
+   warehouse id, and run `./deploy.local.sh dev`.
 3. Run **`[NBO] Part 1`** end-to-end first. Then run **`[NBO] Part 2`** (it reuses Part 1's catalog,
-   features, online store, and ranker).
-4. Launch the recommender app and open the latency dashboard.
+   features, online store, and ranker). Part 2 streaming online serving is gated — see the status
+   note above.
+4. Launch the recommender app and open the latency dashboard. Grant the app's service principal
+   `SELECT` on the catalog and `Can Query` on `nbo-ranker-online`.
+
+### Configurable variables (`--var name=value`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `warehouse_id` | *(required)* | SQL warehouse for the app + dashboard |
+| `catalog` | `fins_industry_solutions` | UC catalog (standard storage) |
+| `schema` | `nbo` | Schema for all assets |
+| `online_store_name` | `nbo-online-store` | Lakebase online store |
+| `kafka_connection` | `msk_kafka` | UC Kafka connection (Part 2) |
+| `service_credential` | `msk_kafka` | UC service credential for MSK IAM (Part 2) |
+| `kafka_topic` | `nbo-session-events` | In-session events topic (Part 2) |
 
 ### Prerequisites
 
 - DBR **17.0 ML** or later; `databricks-feature-engineering >= 0.16.0`; **serverless (latest env)**
-- **Lakebase** online store, **Model Serving** (Part 1); a **Kafka/MSK** UC connection (Part 2)
+- **Lakebase** online store, **Model Serving** (Part 1); a **Kafka/MSK** UC connection (Part 2, DBR 19+ for streaming online)
 - A Unity Catalog catalog on **standard storage** (streaming Feature Views cannot use default storage)
 
 ## Contributing
 
-Clone locally, validate with `databricks bundle validate`, and open a PR with peer review.
+Validate changes with `databricks bundle validate` before submitting. Issues and pull requests
+are welcome.
 
 ## License
 

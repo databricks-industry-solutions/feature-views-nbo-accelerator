@@ -7,7 +7,7 @@
 # MAGIC `customer_id`** at request time — the request body carries only `customer_id` + the
 # MAGIC offer fields. This is the "author a feature once, serve it online" proof point.
 # MAGIC
-# MAGIC **Verified end-to-end on `fe-vm-ttan-vm`** — request `{customer_id, offer_id,
+# MAGIC **Verified end-to-end** — request `{customer_id, offer_id,
 # MAGIC product_category, base_reward, tier_requirement}` → endpoint looks up the 5 customer
 # MAGIC features online → ranks. ~15ms in-region per 40-offer batch, per-customer offer spread up to 1.0.
 # MAGIC
@@ -111,10 +111,25 @@ print("val_auc:", roc_auc_score(yte, model.predict_proba(Xte)[:, 1]))
 # COMMAND ----------
 # MAGIC %md ## Log with feature metadata → register → deploy route-optimized
 # COMMAND ----------
+# Pin the serving env explicitly (see notebook 04 for the rationale). Exact-pin
+# mlflow/sklearn/lightgbm; range-pin numpy/pandas below mlflow's caps. Do NOT add
+# databricks-feature-engineering — fe.log_model injects databricks-feature-lookup and
+# the two conflict.
+import sklearn, lightgbm
+pip_requirements = [
+    f"mlflow=={mlflow.__version__}",
+    f"scikit-learn=={sklearn.__version__}",
+    f"lightgbm=={lightgbm.__version__}",
+    "numpy>=1.26,<2",
+    "pandas>=2.1,<3",
+    "cloudpickle",
+]
+
 MODEL = f"{catalog}.{schema}.nbo_ranker_online"
 with mlflow.start_run(run_name="nbo_ranker_online_lookup"):
     fe.log_model(model=model, artifact_path="model", flavor=mlflow.sklearn,
                  training_set=ts, registered_model_name=MODEL,
+                 pip_requirements=pip_requirements,
                  skops_trusted_types=["collections.OrderedDict", "lightgbm.basic.Booster",
                      "lightgbm.sklearn.LGBMClassifier",
                      "sklearn.compose._column_transformer._RemainderColsList"])
@@ -137,6 +152,12 @@ else:
     w.serving_endpoints.create(name=ENDPOINT, route_optimized=True,
         config=EndpointCoreConfigInput(name=ENDPOINT, served_entities=served,
             traffic_config=TrafficConfig(routes=[Route(served_model_name=SERVED, traffic_percentage=100)])))
+
+# Endpoint deploy is async. Block until the config update finishes and the endpoint is READY
+# so the downstream latency benchmark (06) doesn't query a not-ready / cold endpoint.
+print(f"Waiting for {ENDPOINT} to become READY (build + provision can take ~10-20 min on first deploy)...")
+w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
+print(f"{ENDPOINT} is READY.")
 
 # COMMAND ----------
 # MAGIC %md ## Query — request carries only customer_id + offer fields; features fetched online

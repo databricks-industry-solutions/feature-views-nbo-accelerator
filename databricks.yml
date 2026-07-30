@@ -1,5 +1,12 @@
 # Databricks Asset Bundle for the FSI Next-Best-Offer accelerator.
-# Deploy with:  databricks bundle deploy --target dev
+#
+# Deploy (host comes from your CLI profile / DATABRICKS_HOST — nothing workspace-specific is
+# committed here):
+#   databricks bundle deploy -t dev -p <your-profile> --var warehouse_id=<sql-warehouse-id>
+#
+# Override any variable at deploy time with repeated --var flags, e.g.:
+#   --var catalog=my_catalog --var schema=nbo --var warehouse_id=abc123
+# A local, git-ignored ./deploy.local.sh can hold your real profile + warehouse id (see README).
 bundle:
   name: feature-views-nbo-accelerator
 
@@ -16,12 +23,8 @@ variables:
   online_store_name:
     description: Lakebase online store name (DNS-compliant — lowercase, hyphens, no underscores)
     default: nbo-online-store
-  vector_search_endpoint:
-    description: Vector Search endpoint for offer candidate retrieval
-    default: nbo-vs-endpoint
   warehouse_id:
-    description: SQL warehouse id for the app and dashboard
-    default: ""
+    description: SQL warehouse id for the app and dashboard (required — pass with --var warehouse_id=<id>)
   kafka_connection:
     description: Existing Unity Catalog Kafka connection name (holds bootstrap servers)
     default: msk_kafka
@@ -33,13 +36,11 @@ variables:
     default: nbo-session-events
 
 targets:
+  # Host is intentionally omitted from both targets so nothing workspace-specific is committed.
+  # The CLI resolves the host from the profile you pass (-p <profile>) or DATABRICKS_HOST.
   dev:
     mode: development
     default: true
-    workspace:
-      host: https://fe-vm-ttan-vm.cloud.databricks.com
 
   prod:
     mode: production
-    workspace:
-      host: https://fe-vm-ttan-vm.cloud.databricks.com

@@ -1,20 +1,22 @@
 # Dashboards
 
 AI/BI dashboard for the accelerator. `nbo_dashboard.json` is the serialized Lakeview
-definition; deploy it after Part 2 notebook 11 populates `latency_results`.
+definition; deploy it after notebook `06_latency_benchmark.py` populates
+`part1_latency_results`.
 
 ## Panels (as built)
-- **KPI row** — customers, transactions (feature source), end-to-end serving **p95 vs 300ms budget**.
-- **Serving latency by stage** — grouped bars of p50/p95/p99 for retrieval, ranking, and e2e
-  (proves the sub-300ms path).
+- **KPI row** — customers, transactions (feature source), feature-read+rank **p95 vs 300ms budget**.
+- **Serving latency by stage** — grouped bars of p50/p95/p99 for the `feature_read_and_rank`
+  path (proves the sub-300ms path).
 - **Offer acceptance by loyalty tier** — shows the ranker learned real signal
   (platinum ~60% → bronze ~26%).
 - **Offer catalog by category** + **latency percentile table** — recommendation catalog and detail.
 
-Source: `fins_industry_solutions.nbo` — `latency_results`, `labels` × `customers`, `offers`.
+Source: `fins_industry_solutions.nbo` — `part1_latency_results`, `labels` × `customers`, `offers`.
 
 ## Deploy
-Queries are validated against the live tables. Deploy on `fe-vm-ttan-vm`:
+Queries are validated against the live tables. Replace `<your-profile>`, `<warehouse-id>`,
+and `<you>` with your own values:
 ```bash
 python3 - <<'PY'
 import json
@@ -25,16 +27,14 @@ payload = {"display_name": "NBO Feature Views Accelerator",
            "serialized_dashboard": json.dumps(d)}
 open("/tmp/dash.json", "w").write(json.dumps(payload))
 PY
-databricks api post /api/2.0/lakeview/dashboards -p fe-vm-ttan-vm --json @/tmp/dash.json
-# then publish:
-databricks api post /api/2.0/lakeview/dashboards/<id>/published -p fe-vm-ttan-vm \
+databricks api post /api/2.0/lakeview/dashboards -p <your-profile> --json @/tmp/dash.json
+# then publish (embed_credentials runs published queries as the publisher's identity —
+# only enable it if that identity is appropriate for everyone who can view the dashboard):
+databricks api post /api/2.0/lakeview/dashboards/<id>/published -p <your-profile> \
   --json '{"embed_credentials": true, "warehouse_id": "<warehouse-id>"}'
 ```
 
-## Deployed instance
-- Dashboard ID: `01f18466ba9b1d70b4214aacb51fa203` (published on `fe-vm-ttan-vm`).
-
 ## Future panels (need streaming path)
-- **Feature freshness** — event → online-availability lag for streaming RollingWindow features
-  (the ~200ms p99 launch figure), once notebook 01b/02 streaming is wired.
+- **Feature freshness** — event → online-availability lag for streaming RollingWindow features,
+  once the Part 2 streaming online path is unblocked (see Part 2 status in the root README).
 - **Online store health** — Lakebase read QPS and capacity utilization.

@@ -1,15 +1,18 @@
 # Recommender App — Real-Time Next-Best-Offer
 
-Streamlit Databricks App that demos the two-stage recommender with a **live latency
+Streamlit Databricks App that demos the **rank-all** recommender with a **live latency
 meter**, proving the sub-300ms serving path.
 
 ## What it does
-1. Pick a customer (loyalty tier + risk band shown) and an in-session intent.
-2. **Recommend** runs the two-stage path:
-   - **Stage 1 — retrieval:** Vector Search ANN over `offers_index` (offer embeddings).
-   - **Stage 2 — ranking:** the `nbo-ranker-online` Model Serving endpoint (online feature lookup) scores customer × candidates.
-3. Per-stage + end-to-end latency render as live metrics, colored against the 300ms budget.
-4. A reference panel reads the benchmarked percentiles from `latency_results` (Part 2 notebook 11).
+1. Pick a customer (loyalty tier + risk band shown).
+2. **Recommend** scores the full offer catalog in one shot:
+   - The `nbo-ranker-online` Model Serving endpoint fetches the customer's features
+     from the online store **by `customer_id`** at request time, then scores every
+     offer. No retrieval stage — for a catalog this size you rank everything directly
+     (mirrors notebook `06_latency_benchmark.py`).
+3. Feature-read+rank latency renders as a live metric, colored against the 300ms budget.
+4. A reference panel reads the benchmarked percentiles from `part1_latency_results`
+   (written by notebook 06).
 
 ## Resources (wire via Apps UI → Configure → + Add resource)
 | Key (`valueFrom`) | Resource | Permission |
@@ -17,13 +20,12 @@ meter**, proving the sub-300ms serving path.
 | `sql-warehouse` | a SQL warehouse | Can use |
 | `serving-endpoint` | `nbo-ranker-online` | Can query |
 
-The Vector Search index/endpoint and catalog/schema are passed as plain env values
-in `app.yaml` (the app queries the index via the SDK using the service principal).
+Catalog/schema are passed as plain env values in `app.yaml`.
 
 ## Run locally
 ```bash
 pip install -r requirements.txt
-export DATABRICKS_CONFIG_PROFILE=fe-vm-ttan-vm
+export DATABRICKS_CONFIG_PROFILE=<your-profile>
 export DATABRICKS_WAREHOUSE_ID=<warehouse-id>
 streamlit run app.py
 ```
@@ -32,14 +34,7 @@ streamlit run app.py
 ```bash
 databricks apps deploy nbo-recommender \
   --source-code-path /Workspace/Users/<you>/nbo_accelerator/apps/recommender-app \
-  -p fe-vm-ttan-vm
+  -p <your-profile>
 ```
 Then add the SQL warehouse + serving endpoint resources in the app's Configure tab
 and grant the app's service principal `SELECT` on the catalog and `Can Query` on the endpoint.
-
-## Deployed instance
-- **Live on `fe-vm-ttan-vm`**: `https://nbo-recommender-2669921646648788.aws.databricksapps.com`
-- Resources wired: `sql-warehouse` → warehouse `2a0b73493fe19b04` (CAN_USE),
-  `serving-endpoint` → `nbo-ranker-online` (CAN_QUERY).
-- App service principal granted `USE_CATALOG`/`USE_SCHEMA`/`SELECT` on
-  fins_industry_solutions and `SELECT` on `offers_index`.

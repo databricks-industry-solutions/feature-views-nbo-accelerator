@@ -6,7 +6,7 @@
 # MAGIC `nbo-ranker-online` endpoint fetches the 5 customer features from the online store by
 # MAGIC `customer_id` and scores the passed-in candidate set (here: the full 40-offer catalog).
 # MAGIC
-# MAGIC **Measured on `fe-vm-ttan-vm`** — this is the path that maps directly to the personalization
+# MAGIC **Measured in-region** — this is the path that maps directly to the personalization
 # MAGIC reference (~10ms feature-serving read + ~30ms model-serving inference):
 # MAGIC
 # MAGIC | Stage | In-region estimate | Notes |

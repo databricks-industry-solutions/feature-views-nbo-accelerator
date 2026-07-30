@@ -12,9 +12,9 @@ resources:
             id: ${var.warehouse_id}
             permission: CAN_USE
         - name: serving-endpoint
-          description: "nbo-ranker ranking model endpoint."
+          description: "nbo-ranker-online ranking model endpoint (Part 1 online-lookup ranker)."
           serving_endpoint:
-            name: nbo-ranker
+            name: nbo-ranker-online
             permission: CAN_QUERY
 
   dashboards:

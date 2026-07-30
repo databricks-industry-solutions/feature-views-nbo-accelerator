@@ -87,13 +87,28 @@ model = Pipeline([
 # COMMAND ----------
 MODEL_NAME = f"{catalog}.{schema}.nbo_ranker"
 
+# Pin the serving env explicitly. Without this, MLflow auto-detects from the cluster and the
+# serving-image build often fails. Exact-pin unpickle-sensitive libs (mlflow/sklearn/lightgbm);
+# range-pin numpy/pandas below mlflow's caps. Do NOT add databricks-feature-engineering here —
+# fe.log_model injects databricks-feature-lookup, and the two conflict over the same namespace.
+import sklearn, lightgbm
+pip_requirements = [
+    f"mlflow=={mlflow.__version__}",
+    f"scikit-learn=={sklearn.__version__}",
+    f"lightgbm=={lightgbm.__version__}",
+    "numpy>=1.26,<2",
+    "pandas>=2.1,<3",
+    "cloudpickle",
+]
+
 with mlflow.start_run(run_name="nbo_ranker") as run:
     model.fit(Xtr, ytr)
     auc = roc_auc_score(yte, model.predict_proba(Xte)[:, 1])
     mlflow.log_metric("val_auc", auc)
     print("val_auc:", auc)
     fe.log_model(model=model, artifact_path="ranker", flavor=mlflow.sklearn,
-                 training_set=training_set, registered_model_name=MODEL_NAME)
+                 training_set=training_set, registered_model_name=MODEL_NAME,
+                 pip_requirements=pip_requirements)
 
 from mlflow.tracking import MlflowClient
 c = MlflowClient(registry_uri="databricks-uc")

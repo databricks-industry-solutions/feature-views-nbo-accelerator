@@ -5,7 +5,7 @@
 # MAGIC Feature View (notebook 08). Follows the Databricks Feature Views streaming docs:
 # MAGIC <https://docs.databricks.com/aws/en/machine-learning/feature-store/streams>
 # MAGIC
-# MAGIC **Auth (verified on `fe-vm-ttan-vm`):** UC Kafka connection **`msk_kafka`** (AWS MSK, IAM,
+# MAGIC **Auth:** UC Kafka connection **`msk_kafka`** (AWS MSK, IAM,
 # MAGIC public-TLS :9198), backed by UC **service credential `msk_kafka`**.
 # MAGIC
 # MAGIC Two auth paths, each for its job:

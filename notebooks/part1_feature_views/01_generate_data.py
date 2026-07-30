@@ -48,7 +48,7 @@ FROM range(0, {N_CUSTOMERS}) AS t(id)
 """)
 
 # COMMAND ----------
-# MAGIC %md ## Offers — NBO catalog; `offer_text` feeds Vector Search embeddings (nb 05)
+# MAGIC %md ## Offers — NBO catalog; ranked directly by the online-lookup ranker (nb 05)
 # COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE offers AS
@@ -89,7 +89,7 @@ FROM range(0, {N_TRANSACTIONS}) AS t(id)
 
 # COMMAND ----------
 # MAGIC %md ## Session events — in-session clickstream (RollingWindow streaming features)
-# MAGIC `event_time` is the event-time column; notebook 01b replays these into Kafka/MSK.
+# MAGIC `event_time` is the event-time column; Part 2 notebook 07 replays these into Kafka/MSK.
 # COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE session_events AS

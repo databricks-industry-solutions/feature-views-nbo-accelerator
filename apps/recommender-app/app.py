@@ -1,9 +1,10 @@
 """Real-Time Next-Best-Offer — Databricks App (Streamlit).
 
-Simulates a retail-banking customer active in-session, runs the two-stage
-recommender (Vector Search retrieval → Model Serving ranking), and renders the
-ranked offers alongside a live end-to-end latency meter that makes the sub-300ms
-serving claim tangible.
+Picks a retail-banking customer, scores the FULL offer catalog through the
+online-lookup ranker (customer features fetched from the online store by key at
+request time), and renders the ranked offers alongside a live feature-read+rank
+latency meter that makes the sub-300ms serving claim tangible. Rank-all: no
+retrieval stage, mirroring notebook 06.
 """
 
 import streamlit as st
@@ -14,15 +15,6 @@ st.set_page_config(page_title="Next-Best-Offer · Feature Views", layout="wide")
 
 BUDGET_MS = 300  # the headline serving budget
 
-# In-session intent presets — each maps to a natural-language retrieval context.
-CONTEXTS = {
-    "Comparing credit cards": "customer comparing credit cards with cashback and travel rewards",
-    "Viewing savings rates": "customer viewing savings account rates and high yield options",
-    "Using loan calculator": "customer using personal loan calculator for debt consolidation",
-    "Browsing mortgages": "customer browsing mortgage refinance and home equity options",
-    "Exploring investments": "customer exploring retirement investment and IRA products",
-}
-
 
 @st.cache_resource
 def get_backend() -> Backend:
@@ -32,6 +24,11 @@ def get_backend() -> Backend:
 @st.cache_data(ttl=300)
 def load_customers() -> list[dict]:
     return get_backend().sample_customers(25)
+
+
+@st.cache_data(ttl=300)
+def load_offers() -> list[dict]:
+    return get_backend().offers()
 
 
 @st.cache_data(ttl=300)
@@ -54,8 +51,8 @@ def meter(label: str, ms: float, budget: float | None = None) -> None:
 
 
 st.title("🏦 Real-Time Next-Best-Offer")
-st.caption("Two-stage recommender on Databricks Feature Views — "
-           "in-session intent → Vector Search retrieval → ranking, in **under 300ms**.")
+st.caption("Rank-all recommender on Databricks Feature Views — "
+           "online feature lookup by customer_id → score the full offer catalog, in **under 300ms**.")
 
 backend = get_backend()
 
@@ -79,7 +76,6 @@ with left:
     c1.metric("Loyalty tier", customer["loyalty_tier"])
     c2.metric("Risk band", customer["risk_band"])
 
-    intent = st.radio("In-session intent", list(CONTEXTS.keys()))
     go = st.button("🎯 Recommend offers", type="primary", use_container_width=True)
 
 # --- Recommend + latency meter -------------------------------------------
@@ -87,18 +83,17 @@ with right:
     st.subheader("Recommended offers")
     if go:
         try:
-            rec = backend.recommend(customer, CONTEXTS[intent], k=10)
+            offers = load_offers()
+            rec = backend.recommend(customer, offers, k=10)
         except Exception as e:
             st.error(f"Recommendation failed: {e}")
             st.stop()
 
-        m1, m2, m3 = st.columns(3)
+        m1, m2 = st.columns(2)
         with m1:
-            meter("Retrieval", rec.timing.retrieval_ms)
+            meter("Feature read + rank", rec.timing.rank_ms, budget=BUDGET_MS)
         with m2:
-            meter("Ranking", rec.timing.ranking_ms)
-        with m3:
-            meter("End-to-end", rec.timing.e2e_ms, budget=BUDGET_MS)
+            st.metric("Offers scored", len(offers))
 
         if rec.timing.e2e_ms < BUDGET_MS:
             st.success(f"✅ Served in {rec.timing.e2e_ms:.0f} ms — under the {BUDGET_MS} ms budget.")
@@ -133,7 +128,7 @@ with right:
             },
         )
     else:
-        st.info("Pick a customer and an in-session intent, then click **Recommend offers**.")
+        st.info("Pick a customer, then click **Recommend offers**.")
 
 # --- Benchmark reference ---------------------------------------------------
 st.divider()
@@ -141,11 +136,11 @@ st.subheader("📊 Benchmarked serving latency (notebook 06)")
 lat = load_latency()
 if lat:
     st.caption("Percentiles from the load test (N=100, warmed). Read live from "
-               "`latency_results`.")
+               "`part1_latency_results`.")
     st.dataframe(
         [{"Stage": r["stage"], "p50 (ms)": r["p50"], "p95 (ms)": r["p95"], "p99 (ms)": r["p99"]}
          for r in sorted(lat, key=lambda r: r["stage"])],
         use_container_width=True, hide_index=True,
     )
 else:
-    st.caption("Run notebook 06 to populate `latency_results`.")
+    st.caption("Run notebook 06 to populate `part1_latency_results`.")

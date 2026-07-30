@@ -6,3 +6,5 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+# Local deploy helper holding workspace-specific values (profile, warehouse id, host).
+deploy.local.sh
