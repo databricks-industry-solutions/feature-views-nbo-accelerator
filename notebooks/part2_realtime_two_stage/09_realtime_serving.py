@@ -170,10 +170,10 @@ print(f"{ENDPOINT} is READY.")
 # COMMAND ----------
 # MAGIC %md ## Rank-all serving — request carries only customer_id + offer fields
 # MAGIC The endpoint looks up all 6 customer features (incl. the live `cust_clicks_10m`) online.
-# MAGIC ```python
-# MAGIC dp = w.serving_endpoints_data_plane   # route-optimized → data-plane client
-# MAGIC offers = spark.table(f"`{catalog}`.{schema}.offers").collect()
-# MAGIC recs = [{"customer_id": cid, "offer_id": o.offer_id, "product_category": o.product_category,
-# MAGIC          "base_reward": o.base_reward, "tier_requirement": o.tier_requirement} for o in offers]
-# MAGIC preds = dp.query(name="nbo-ranker-realtime", dataframe_records=recs).predictions
-# MAGIC ```
+
+# COMMAND ----------
+dp = w.serving_endpoints_data_plane   # route-optimized → data-plane client
+offers = spark.table(f"`{catalog}`.{schema}.offers").collect()
+recs = [{"customer_id": cid, "offer_id": o.offer_id, "product_category": o.product_category,
+         "base_reward": o.base_reward, "tier_requirement": o.tier_requirement} for o in offers]
+preds = dp.query(name="nbo-ranker-realtime", dataframe_records=recs).predictions
