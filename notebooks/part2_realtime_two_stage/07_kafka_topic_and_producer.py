@@ -35,6 +35,7 @@ dbutils.widgets.text("topic", "nbo-session-events")
 dbutils.widgets.text("mode", "bounded", "bounded | continuous")
 dbutils.widgets.text("num_events", "200000")
 dbutils.widgets.text("events_per_sec", "2000")
+dbutils.widgets.text("duration_sec", "300")  # continuous mode: how long to keep bursting
 
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
@@ -126,11 +127,23 @@ if mode == "bounded":
 
 # COMMAND ----------
 # MAGIC %md ## 3b · Continuous produce (live demo + freshness benchmark)
+# MAGIC Serverless job compute rejects an infinite `writeStream` trigger
+# MAGIC (`INFINITE_STREAMING_TRIGGER_NOT_SUPPORTED`: ProcessingTime/continuous triggers are not
+# MAGIC allowed, and a `rate` source can't use `AvailableNow`). So instead of one unbounded stream we
+# MAGIC run a **repeated bounded-burst loop** for `duration_sec`: each iteration writes a fresh batch
+# MAGIC (with a live `event_time = current_timestamp()`), which keeps the topic — and therefore the
+# MAGIC streaming online table — continuously fed. No checkpoint volume needed, and the task
+# MAGIC terminates so the job DAG can proceed. Use the `duration_sec` / `events_per_burst` widgets.
 # COMMAND ----------
 if mode == "continuous":
-    checkpoint = f"/Volumes/{catalog}/{schema}/checkpoints/kafka_producer"
-    rate = spark.readStream.format("rate").option("rowsPerSecond", events_per_sec).load().withColumnRenamed("value", "seq")
-    q = (to_events(rate, "seq").writeStream.format("kafka").options(**KAFKA_OPTS)
-         .option("topic", topic).option("checkpointLocation", checkpoint).start())
-    print(f"Streaming ~{events_per_sec} events/s to '{topic}'. Checkpoint: {checkpoint}")
-    # q.awaitTermination()
+    import time as _t
+    duration_sec = int(dbutils.widgets.get("duration_sec"))
+    events_per_burst = max(1, events_per_sec)  # one burst ~ events_per_sec rows, ~1 burst/sec
+    deadline = _t.time() + duration_sec
+    bursts = 0
+    while _t.time() < deadline:
+        seq0 = int(_t.time() * 1000)
+        events = to_events(spark.range(seq0, seq0 + events_per_burst).withColumnRenamed("id", "seq"), "seq")
+        events.write.format("kafka").options(**KAFKA_OPTS).option("topic", topic).save()
+        bursts += 1
+    print(f"Produced {bursts} bursts × ~{events_per_burst} events over ~{duration_sec}s to '{topic}'.")

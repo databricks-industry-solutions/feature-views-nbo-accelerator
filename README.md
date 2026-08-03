@@ -4,7 +4,7 @@
 ![Unity Catalog](https://img.shields.io/badge/Unity%20Catalog-Governed-00A972)
 ![Serverless](https://img.shields.io/badge/Serverless-Compute-1B3139)
 ![Feature Views](https://img.shields.io/badge/Feature%20Views-Declarative-FF3621)
-![Latency](https://img.shields.io/badge/E2E%20Serving-%3C300ms-00A972)
+![Latency](https://img.shields.io/badge/E2E%20Serving-p95%20~32ms%20(measured)-00A972)
 
 > A production-grade, real-time **Next-Best-Offer (NBO)** recommender for financial services,
 > built end-to-end on Databricks with **Feature Views** at the center. One declarative feature
@@ -27,12 +27,31 @@ win fast, then scale up to the full real-time recommender:
 Both parts share one catalog and one set of feature definitions. Part 2 re-logs the ranker with the
 streaming `cust_clicks_10m` feature added — same online-lookup pattern, one more feature.
 
-> **⚠️ Part 2 status.** The streaming Feature View's *online* materialization (`StreamingMode()`,
-> notebook 08) does not populate the Lakebase online table on current serverless / pre-DBR-19
-> runtimes, so the live `cust_clicks_10m` feature does not yet reach the serving endpoint. Notebook 08
-> stops early with a clear message unless you explicitly opt in (`allow_streaming_online=true`) on a
-> supported runtime. **Part 1 is the fully-working path** and delivers the core Feature Views value
-> prop on its own.
+> **⚠️ Part 2 status (updated 2026-07-31, measured on FEVM).** Two of the three streaming gates are
+> now cleared; the third is a confirmed platform gap awaiting the DBR-19 fix.
+> - ✅ **Streaming online *materialization* works.** With **hyphen-free online identifiers** (store
+>   `nbo`, table prefix `nbostream`) the `StreamingMode()` sink runs clean — the `lakebase_sink`
+>   (postgresql) pipeline shows no quoted-identifier validation error and the online table
+>   `cust_clicks_10m` populates. This clears the pre-DBR-19 quoted-`"schema"` rejection that
+>   previously left the online table at 0 rows.
+> - ✅ **Continuous streaming + freshness measured.** A serverless-safe producer (repeated bounded
+>   bursts — serverless rejects an infinite `writeStream` trigger) feeds the topic continuously.
+>   Measured steady-state **event→online freshness ≈ p50 ~110ms / p95 ~150–210ms / p99 ~160ms**
+>   (warm pipeline, low-rate; `commit_time − event_time` in the online rows over a tight recent
+>   window); the RollingWindow `cust_clicks_10m` computes live. (A heavy 3k-events/s flood pushes p95
+>   into the seconds as the pipeline works through backlog — that's throughput-under-load, not
+>   steady-state freshness.)
+> - ⛔ **Streaming online *serving* is still gated (root cause pinned).** The streaming sink writes a
+>   Postgres online table but does **not** register it as a UC *synced table* (no `source_table` /
+>   `source_table_id` — batch online tables have these). Model Serving's feature-lookup engine uses
+>   that synced-table registration to obtain an OAuth token; without it, the streaming table falls
+>   back to password auth and fails (`KeyError: 'OAUTH_TOKEN'` → `password authentication failed`),
+>   so the ranker re-logged with the streaming feature can't deploy. This is the platform-side half of
+>   the DBR-19 fix, not a config error.
+>
+> **Part 1 is the fully-working, fully-served path** (endpoint live, **p95 ≈ 32ms measured**). Part 2
+> proves the streaming feature reaches the online store and is fresh; only live *serving* of it awaits
+> DBR 19. Notebook 08 still stops early unless you opt in (`allow_streaming_online=true`).
 
 ---
 
@@ -161,7 +180,7 @@ Part 1 batch online features (5) ───────────────�
 | `warehouse_id` | *(required)* | SQL warehouse for the app + dashboard |
 | `catalog` | `fins_industry_solutions` | UC catalog (standard storage) |
 | `schema` | `nbo` | Schema for all assets |
-| `online_store_name` | `nbo-online-store` | Lakebase online store |
+| `online_store_name` | `nbo` | Lakebase online store (single word — hyphen-free target for the streaming sink) |
 | `kafka_connection` | `msk_kafka` | UC Kafka connection (Part 2) |
 | `service_credential` | `msk_kafka` | UC service credential for MSK IAM (Part 2) |
 | `kafka_topic` | `nbo-session-events` | In-session events topic (Part 2) |

@@ -21,8 +21,8 @@ variables:
     description: Schema for all accelerator assets
     default: nbo
   online_store_name:
-    description: Lakebase online store name (DNS-compliant — lowercase, hyphens, no underscores)
-    default: nbo-online-store
+    description: Lakebase online store name (DNS-compliant — lowercase, hyphens, no underscores). Single word 'nbo' so the streaming FS sink emits an unquoted Postgres target (see Part 2 DBR-19 note).
+    default: nbo
   warehouse_id:
     description: SQL warehouse id for the app and dashboard (required — pass with --var warehouse_id=<id>)
   kafka_connection:
