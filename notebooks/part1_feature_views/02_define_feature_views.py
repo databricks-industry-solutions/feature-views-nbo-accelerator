@@ -35,6 +35,19 @@ from databricks.feature_engineering.entities import (
 )
 fe = FeatureEngineeringClient()
 
+# Idempotent registration: get_feature if it already exists, else create_feature. create_feature
+# is not idempotent (raises AlreadyExists on a re-run or a shared/pre-provisioned catalog), so
+# this mirrors the get-or-create guards in notebooks 03 and 08 and keeps 02 safely re-runnable.
+def get_or_create_feature(name, **create_kwargs):
+    try:
+        f = fe.get_feature(full_name=f"{catalog}.{schema}.{name}")
+        print(f"Feature {name} already exists — reusing it.")
+        return f
+    except Exception:
+        f = fe.create_feature(catalog_name=catalog, schema_name=schema, name=name, **create_kwargs)
+        print(f"Created feature {name}.")
+        return f
+
 # COMMAND ----------
 # MAGIC %md ## Sources — entity/timeseries live on the Feature, not the source
 # COMMAND ----------
@@ -47,40 +60,40 @@ cust_source = DeltaTableSource(catalog_name=catalog, schema_name=schema, table_n
 # MAGIC `AggregationFunction(operator=..., time_window=...)` — window lives *inside* the
 # MAGIC aggregation. Sliding = overlapping (recomputed each slide); Tumbling = fixed buckets.
 # COMMAND ----------
-avg_balance_30d = fe.create_feature(
+avg_balance_30d = get_or_create_feature(
+    "cust_avg_balance_30d",
     source=txn_source, entity=["customer_id"], timeseries_column="ts",
     function=AggregationFunction(
         operator=Avg(input="balance"),
         time_window=SlidingWindow(window_duration=timedelta(days=30), slide_duration=timedelta(days=1))),
-    catalog_name=catalog, schema_name=schema, name="cust_avg_balance_30d",
 )
-spend_90d = fe.create_feature(
+spend_90d = get_or_create_feature(
+    "cust_spend_90d",
     source=txn_source, entity=["customer_id"], timeseries_column="ts",
     function=AggregationFunction(
         operator=Sum(input="amount"),
         time_window=TumblingWindow(window_duration=timedelta(days=90))),
-    catalog_name=catalog, schema_name=schema, name="cust_spend_90d",
 )
-txn_count_7d = fe.create_feature(
+txn_count_7d = get_or_create_feature(
+    "cust_txn_count_7d",
     source=txn_source, entity=["customer_id"], timeseries_column="ts",
     function=AggregationFunction(
         operator=Count(input="txn_id"),
         time_window=SlidingWindow(window_duration=timedelta(days=7), slide_duration=timedelta(days=1))),
-    catalog_name=catalog, schema_name=schema, name="cust_txn_count_7d",
 )
 
 # COMMAND ----------
 # MAGIC %md ## Latest-attribute features (ColumnSelection — no window)
 # COMMAND ----------
-loyalty_tier = fe.create_feature(
+loyalty_tier = get_or_create_feature(
+    "cust_loyalty_tier",
     source=cust_source, entity=["customer_id"], timeseries_column="updated_at",
     function=ColumnSelection(column="loyalty_tier"),
-    catalog_name=catalog, schema_name=schema, name="cust_loyalty_tier",
 )
-risk_band = fe.create_feature(
+risk_band = get_or_create_feature(
+    "cust_risk_band",
     source=cust_source, entity=["customer_id"], timeseries_column="updated_at",
     function=ColumnSelection(column="risk_band"),
-    catalog_name=catalog, schema_name=schema, name="cust_risk_band",
 )
 
 # COMMAND ----------

@@ -32,7 +32,7 @@ dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "nbo")
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
-dbutils.widgets.text("online_store_name", "nbo-online-store")
+dbutils.widgets.text("online_store_name", "nbo")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
 conn_name = dbutils.widgets.get("kafka_connection")
@@ -158,7 +158,7 @@ else:
         features=[clicks_10m],
         online_config=OnlineStoreConfig(
             catalog_name=catalog, schema_name=schema,
-            table_name_prefix="nbo_stream_serving", online_store_name=osn,
+            table_name_prefix="nbostream", online_store_name=osn,
         ),
         trigger=StreamingMode(),
     )

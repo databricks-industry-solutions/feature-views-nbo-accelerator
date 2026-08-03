@@ -23,7 +23,7 @@
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "nbo")
-dbutils.widgets.text("online_store_name", "nbo-online-store")
+dbutils.widgets.text("online_store_name", "nbo")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
 osn = dbutils.widgets.get("online_store_name")

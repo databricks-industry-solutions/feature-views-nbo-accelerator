@@ -77,14 +77,21 @@ offer_feats = [get_or_create_req(c) for c in
 # MAGIC %md ## Point-in-time training set + train
 # MAGIC `cust_clicks_10m` is a RollingWindow feature — point-in-time correct for the label `ts`.
 # COMMAND ----------
-labels = spark.table(f"`{catalog}`.{schema}.labels").withColumn("updated_at", F.col("ts"))
+# The batch attribute features (ColumnSelection) use timeseries column `updated_at`; the streaming
+# RollingWindow feature `cust_clicks_10m` uses `event_time` (its leaf timeseries key). create_training_set
+# requires BOTH timestamp keys present on the label df for point-in-time joins, so provide each from the
+# label `ts` (they all mean "as of the label event time" here). Missing `event_time` is what raised
+# "Training DataFrame is missing timestamp key required for join: event_time".
+labels = (spark.table(f"`{catalog}`.{schema}.labels")
+          .withColumn("updated_at", F.col("ts"))
+          .withColumn("event_time", F.col("ts")))
 offers = spark.table(f"`{catalog}`.{schema}.offers").select(
     "offer_id", "product_category", "base_reward", "tier_requirement")
 labels = labels.join(offers, on="offer_id", how="left")
 
 ts = fe.create_training_set(
     df=labels, features=cust_feats + offer_feats, label="accepted",
-    exclude_columns=["record_id", "customer_id", "ts", "updated_at"],
+    exclude_columns=["record_id", "customer_id", "ts", "updated_at", "event_time"],
 )
 tdf = ts.load_df().toPandas()
 
