@@ -31,8 +31,9 @@ online-lookup pattern, one more feature.
 
 > **✅ Part 2 status (updated 2026-08-04, measured end-to-end on FEVM).** The streaming path works
 > from Kafka event through to a live ranking that reflects in-session intent.
-> - ✅ **Streaming online materialization.** With **hyphen-free online identifiers** (store `nbo`,
->   table prefix `nbostream`) the `StreamingMode()` sink runs clean and the online table populates.
+> - ✅ **Streaming online materialization.** With simple online identifiers (store `nbo`, table prefix
+>   `nbostream`) the `StreamingMode()` sink runs clean and the online table populates. Keep online
+>   store/table names plain — decorated names can make the sink quote its Postgres target and fail.
 > - ✅ **Single online store + single schema (required).** Batch features (nb03) and the streaming
 >   feature (nb08) **must** materialize into the **same** online store (`online_store_name=nbo`) and
 >   the **same** schema. New Lakebase Autoscaling online stores do **not** support a served model
@@ -188,7 +189,7 @@ Part 1 batch online features (5) ───────────────�
 | `warehouse_id` | *(required)* | SQL warehouse for the app + dashboard |
 | `catalog` | `fins_industry_solutions` | UC catalog (standard storage) |
 | `schema` | `nbo` | Schema for all assets |
-| `online_store_name` | `nbo` | Lakebase online store — single word (hyphen-free, required by the streaming sink). **Batch + streaming features must share this one store**; multi-store lookup is unsupported on new Lakebase stores and breaks route-optimized serving. |
+| `online_store_name` | `nbo` | Lakebase online store — keep it a simple single word (the streaming sink is sensitive to decorated names). **Batch + streaming features must share this one store**; multi-store lookup is unsupported on new Lakebase stores and breaks route-optimized serving. |
 | `kafka_connection` | `msk_kafka` | UC Kafka connection (Part 2) |
 | `service_credential` | `msk_kafka` | UC service credential for MSK IAM (Part 2) |
 | `kafka_topic` | `nbo-session-events` | In-session events topic (Part 2) |

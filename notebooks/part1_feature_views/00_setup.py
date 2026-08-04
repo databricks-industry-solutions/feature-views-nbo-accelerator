@@ -52,17 +52,17 @@ spark.sql(f"USE `{catalog}`.`{schema}`")
 
 # COMMAND ----------
 # MAGIC %md ## Create the Lakebase online store
-# MAGIC Name must be DNS-compliant: lowercase, alphanumeric + hyphens, **no underscores**.
-# MAGIC NOTE: streaming online materialization (Part 2) has been blocked until DBR 19 (~2026-08-11)
-# MAGIC by an Eng-confirmed FS bug — the streaming JDBC sink emits the Postgres target with a *quoted*
-# MAGIC schema identifier (`"nbo"`), which the pre-DBR-19 validator rejects. Batch (Part 1) is
-# MAGIC unaffected. See featureview_sa.md §4 / Pitfall #9.
+# MAGIC Name must be DNS-compliant: lowercase, alphanumeric, **no underscores**.
 # MAGIC
-# MAGIC **Bypass experiment (this deploy):** the store name is now the single word `nbo` (was
-# MAGIC `nbo-online-store`) and the streaming online table prefix is `nbostream` (was
-# MAGIC `nbo_stream_serving`) — every identifier in the online target is now hyphen-free, so the sink
-# MAGIC no longer *needs* to quote for DNS/hyphen reasons. Part 2 runs with
-# MAGIC `allow_streaming_online=true` to test whether this sidesteps the pre-DBR-19 rejection.
+# MAGIC **Naming matters for the streaming sink (Part 2).** Keep the online store name and the online
+# MAGIC table prefixes simple (here: store `nbo`, prefixes `nbo_on` / `nbostream`). Streaming online
+# MAGIC materialization can fail on identifiers that force the sink to quote its Postgres target, so
+# MAGIC prefer plain single-word names over decorated ones. Batch (Part 1) is unaffected either way.
+# MAGIC
+# MAGIC **One store for everything.** Part 1's batch features and Part 2's streaming feature must
+# MAGIC materialize into this **same** online store — a served model cannot look up features across
+# MAGIC multiple online stores on new Lakebase stores, and splitting them breaks route-optimized
+# MAGIC serving. Notebook 08 preflights this and fails loudly on a mismatch.
 # COMMAND ----------
 from databricks.feature_engineering import FeatureEngineeringClient
 
