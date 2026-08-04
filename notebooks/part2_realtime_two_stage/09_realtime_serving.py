@@ -170,10 +170,33 @@ print(f"{ENDPOINT} is READY.")
 # COMMAND ----------
 # MAGIC %md ## Rank-all serving — request carries only customer_id + offer fields
 # MAGIC The endpoint looks up all 6 customer features (incl. the live `cust_clicks_10m`) online.
-
+# MAGIC
+# MAGIC **Auth note:** this is a *route-optimized* endpoint. It accepts **only** an OAuth token
+# MAGIC downscoped to the endpoint (`authorization_details`) — **not** a PAT and **not** a job/notebook
+# MAGIC runtime token. `serving_endpoints_data_plane.query()` performs that token exchange, but it needs
+# MAGIC an interactive OAuth (U2M) client or a service-principal `client_credentials` flow; run as a
+# MAGIC serverless **job** it raises `OAuth tokens are not available for runtime authentication`. So this
+# MAGIC demo cell is best-effort: it runs when executed interactively and is skipped (not failed) under
+# MAGIC job runtime auth. See `10_latency_and_freshness` for the benchmarked numbers and
+# MAGIC https://docs.databricks.com/aws/en/machine-learning/model-serving/query-route-optimization
 # COMMAND ----------
-dp = w.serving_endpoints_data_plane   # route-optimized → data-plane client
-offers = spark.table(f"`{catalog}`.{schema}.offers").collect()
-recs = [{"customer_id": cid, "offer_id": o.offer_id, "product_category": o.product_category,
-         "base_reward": o.base_reward, "tier_requirement": o.tier_requirement} for o in offers]
-preds = dp.query(name="nbo-ranker-realtime", dataframe_records=recs).predictions
+def _rank_all(customer_id):
+    offers = spark.table(f"`{catalog}`.{schema}.offers").collect()
+    recs = [{"customer_id": customer_id, "offer_id": o.offer_id,
+             "product_category": o.product_category, "base_reward": float(o.base_reward),
+             "tier_requirement": int(o.tier_requirement)} for o in offers]
+    return w.serving_endpoints_data_plane.query(
+        name=ENDPOINT, dataframe_records=recs).predictions
+
+# Demo with the first available customer. Under job runtime auth the route-optimized token
+# exchange is unavailable, so we surface a clear skip instead of failing the notebook.
+try:
+    sample_customer = spark.table(f"`{catalog}`.{schema}.customers").select("customer_id").first()[0]
+    print("rank-all predictions:", _rank_all(sample_customer))
+except Exception as e:
+    if "OAuth tokens are not available" in str(e):
+        print("Skipping live query cell: route-optimized endpoints require an interactive OAuth "
+              "(U2M) or service-principal client_credentials token; a serverless job runtime token "
+              "cannot query them. Endpoint is deployed and READY — run this cell interactively to score.")
+    else:
+        raise

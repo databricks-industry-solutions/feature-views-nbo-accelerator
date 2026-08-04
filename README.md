@@ -4,7 +4,8 @@
 ![Unity Catalog](https://img.shields.io/badge/Unity%20Catalog-Governed-00A972)
 ![Serverless](https://img.shields.io/badge/Serverless-Compute-1B3139)
 ![Feature Views](https://img.shields.io/badge/Feature%20Views-Declarative-FF3621)
-![Latency](https://img.shields.io/badge/E2E%20Serving-p95%20~32ms%20(measured)-00A972)
+![Serving](https://img.shields.io/badge/Feature--read%20%2B%20rank-p95%20~41ms%20(measured)-00A972)
+![Freshness](https://img.shields.io/badge/Kafka→online%20freshness-p95%20~135ms%20(measured)-00A972)
 
 > A production-grade, real-time **Next-Best-Offer (NBO)** recommender for financial services,
 > built end-to-end on Databricks with **Feature Views** at the center. One declarative feature
@@ -19,39 +20,45 @@ win fast, then scale up to the full real-time recommender:
 | **Goal** | Author once → train + serve, sub-50ms feature-read + rank | Freshest in-session intent as a streaming feature |
 | **Adds** | Batch feature views, online lookup, route-optimized ranking | Streaming (MSK) `RollingWindow` feature feeding the ranker |
 | **Approach** | Batch features only (no streaming) | Rank-all: score every offer directly |
-| **Headline** | feature-read + rank **p50 ≈ 15ms in-region** | streaming in-session feature feeding the same ranker |
+| **Headline** | feature-read + rank **p50 ~33ms / p95 ~41ms** (incl WAN) | streaming feature serves live; **event→online p50 ~104ms / p95 ~135ms** |
 | **Notebooks** | `notebooks/part1_feature_views/` (00–06) | `notebooks/part2_realtime_two_stage/` (07–10) |
 | **Job** | `resources/part1_job.yml` | `resources/part2_job.yml` (assumes Part 1 has run) |
-| **Status** | ✅ runs end-to-end | ⚠️ **streaming online serving is gated** (see note below) |
+| **Status** | ✅ runs end-to-end | ✅ runs end-to-end (streaming feature serves live) |
 
-Both parts share one catalog and one set of feature definitions. Part 2 re-logs the ranker with the
-streaming `cust_clicks_10m` feature added — same online-lookup pattern, one more feature.
+Both parts share one catalog, **one schema, and one online store**, plus one set of feature
+definitions. Part 2 re-logs the ranker with the streaming `cust_clicks_10m` feature added — same
+online-lookup pattern, one more feature.
 
-> **⚠️ Part 2 status (updated 2026-07-31, measured on FEVM).** Two of the three streaming gates are
-> now cleared; the third is a confirmed platform gap awaiting the DBR-19 fix.
-> - ✅ **Streaming online *materialization* works.** With **hyphen-free online identifiers** (store
->   `nbo`, table prefix `nbostream`) the `StreamingMode()` sink runs clean — the `lakebase_sink`
->   (postgresql) pipeline shows no quoted-identifier validation error and the online table
->   `cust_clicks_10m` populates. This clears the pre-DBR-19 quoted-`"schema"` rejection that
->   previously left the online table at 0 rows.
-> - ✅ **Continuous streaming + freshness measured.** A serverless-safe producer (repeated bounded
->   bursts — serverless rejects an infinite `writeStream` trigger) feeds the topic continuously.
->   Measured steady-state **event→online freshness ≈ p50 ~110ms / p95 ~150–210ms / p99 ~160ms**
->   (warm pipeline, low-rate; `commit_time − event_time` in the online rows over a tight recent
->   window); the RollingWindow `cust_clicks_10m` computes live. (A heavy 3k-events/s flood pushes p95
->   into the seconds as the pipeline works through backlog — that's throughput-under-load, not
->   steady-state freshness.)
-> - ⛔ **Streaming online *serving* is still gated (root cause pinned).** The streaming sink writes a
->   Postgres online table but does **not** register it as a UC *synced table* (no `source_table` /
->   `source_table_id` — batch online tables have these). Model Serving's feature-lookup engine uses
->   that synced-table registration to obtain an OAuth token; without it, the streaming table falls
->   back to password auth and fails (`KeyError: 'OAUTH_TOKEN'` → `password authentication failed`),
->   so the ranker re-logged with the streaming feature can't deploy. This is the platform-side half of
->   the DBR-19 fix, not a config error.
+> **✅ Part 2 status (updated 2026-08-04, measured end-to-end on FEVM).** The streaming path works
+> from Kafka event through to a live ranking that reflects in-session intent.
+> - ✅ **Streaming online materialization.** With **hyphen-free online identifiers** (store `nbo`,
+>   table prefix `nbostream`) the `StreamingMode()` sink runs clean and the online table populates.
+> - ✅ **Single online store + single schema (required).** Batch features (nb03) and the streaming
+>   feature (nb08) **must** materialize into the **same** online store (`online_store_name=nbo`) and
+>   the **same** schema. New Lakebase Autoscaling online stores do **not** support a served model
+>   looking up features across multiple online stores — an endpoint whose batch features live in one
+>   store and streaming feature in another fails to provision the serving role/OAuth token. Keeping
+>   everything in one store is what makes the re-logged ranker deploy. (This was the real cause of the
+>   earlier serving failure, not a synced-table-registration gap.)
+> - ✅ **Streaming feature serves live.** The re-logged `nbo-ranker-realtime` (route-optimized) deploys
+>   and looks up the live `cust_clicks_10m` online: identical offers score differently for a customer
+>   with fresh in-session clicks vs none.
+> - ✅ **Freshness measured.** Steady-state **event→online freshness ≈ p50 104ms / p95 135ms / p99
+>   157ms** (min ~61ms; low rate ~25 ev/s, warm pipeline; `commit_time − event_time` over ~22k dedup'd
+>   samples, excluding null-event window-expiry and timer rows). A heavy flood (e.g. 2000+ ev/s) pushes
+>   this into seconds as the RollingWindow pipeline works through backlog — that's throughput-under-load,
+>   not steady-state freshness.
+> - ✅ **Serving latency measured.** Feature-read + rank-all **≈ p50 33ms / p95 41ms / p99 49ms**
+>   (interactive, incl. cross-region WAN; in-region lower).
 >
-> **Part 1 is the fully-working, fully-served path** (endpoint live, **p95 ≈ 32ms measured**). Part 2
-> proves the streaming feature reaches the online store and is fresh; only live *serving* of it awaits
-> DBR 19. Notebook 08 still stops early unless you opt in (`allow_streaming_online=true`).
+> **Querying a route-optimized endpoint** (nb06/nb09/nb10): these endpoints accept **only** an OAuth
+> token downscoped to the endpoint. `serving_endpoints_data_plane.query()` handles this from an
+> **interactive** notebook (U2M), but a serverless **job** runtime identity cannot mint that token
+> (raises `OAuth tokens are not available for runtime authentication`), and PATs are unsupported. Run
+> the benchmark notebooks interactively, or query with a service principal via `client_credentials` +
+> `authorization_details` — see
+> [Query route-optimized endpoints](https://docs.databricks.com/aws/en/machine-learning/model-serving/query-route-optimization).
+> Notebook 08 still stops early unless you opt in (`allow_streaming_online=true`).
 
 ---
 
@@ -87,8 +94,9 @@ Delta: customers, transactions, offers, labels
 - **Serving:** the request carries only `{customer_id, offer_id, offer attrs}`; the endpoint
   auto-fetches the customer features from the online store by `customer_id`. For the 40-offer
   catalog you score every offer directly.
-- **Latency (measured):** online feature-read + rank **≈15ms in-region** (route-optimized endpoint,
-  scale-to-zero off) — squarely in the personalization reference band (~10ms feature-read + ~30ms
+- **Latency (measured):** online feature-read + rank **p50 ~33ms / p95 ~41ms / p99 ~49ms**
+  (route-optimized endpoint, scale-to-zero off; measured interactively incl. cross-region WAN RTT, so
+  in-region is lower) — squarely in the personalization reference band (~10ms feature-read + ~30ms
   model-serving).
 
 **Notebooks** (`notebooks/part1_feature_views/`):
@@ -129,9 +137,9 @@ Part 1 batch online features (5) ───────────────�
   training set, so the endpoint fetches it live at serve time and it actually changes recommendations.
 - **Rank-all:** for the ~40-offer catalog we score every offer directly, so there's no candidate
   narrowing step to add latency.
-- **Two numbers, reported separately:** serving **feature-read + rank** (≈15ms in-region) *and*
-  streaming freshness **event → online availability**. The freshness number requires the gated
-  streaming online path (see the Part 2 status note above); serving latency is measured today in Part 1.
+- **Two numbers, reported separately:** serving **feature-read + rank** (p50 ~33ms / p95 ~41ms incl
+  WAN) *and* streaming freshness **event → online availability** (p50 ~104ms / p95 ~135ms steady-state).
+  Both are measured; see the Part 2 status note above.
 
 **Notebooks** (`notebooks/part2_realtime_two_stage/`):
 
@@ -180,7 +188,7 @@ Part 1 batch online features (5) ───────────────�
 | `warehouse_id` | *(required)* | SQL warehouse for the app + dashboard |
 | `catalog` | `fins_industry_solutions` | UC catalog (standard storage) |
 | `schema` | `nbo` | Schema for all assets |
-| `online_store_name` | `nbo` | Lakebase online store (single word — hyphen-free target for the streaming sink) |
+| `online_store_name` | `nbo` | Lakebase online store — single word (hyphen-free, required by the streaming sink). **Batch + streaming features must share this one store**; multi-store lookup is unsupported on new Lakebase stores and breaks route-optimized serving. |
 | `kafka_connection` | `msk_kafka` | UC Kafka connection (Part 2) |
 | `service_credential` | `msk_kafka` | UC service credential for MSK IAM (Part 2) |
 | `kafka_topic` | `nbo-session-events` | In-session events topic (Part 2) |

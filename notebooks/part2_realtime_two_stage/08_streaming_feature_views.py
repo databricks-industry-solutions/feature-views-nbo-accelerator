@@ -148,7 +148,29 @@ except Exception:
 # MAGIC %md ## 3 · Materialize online-only with StreamingMode
 # MAGIC Streaming features are online-only; `StreamingMode()` runs the continuous materialization
 # MAGIC to the Lakebase online store.
+# MAGIC
+# MAGIC **Single-store invariant.** This streaming feature MUST land in the **same** online store as the
+# MAGIC Part 1 batch features (`online_store_name` = `nbo` here) and the **same** schema. New Lakebase
+# MAGIC Autoscaling online stores do not support a served model looking up features across multiple
+# MAGIC online stores, so if the batch features are in one store and this streaming feature in another,
+# MAGIC the re-logged ranker (nb09) fails to provision its serving role/OAuth token and won't deploy.
+# MAGIC The preflight below fails loudly if the stores don't match rather than creating a broken split.
 # COMMAND ----------
+# Preflight: the batch features (materialized in nb03) must live in the SAME online store as osn.
+batch_stores = {
+    m.online_store_config.online_store_name
+    for f in ["cust_avg_balance_30d", "cust_txn_count_7d", "cust_loyalty_tier"]
+    for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.{f}")
+    if m.is_online and getattr(m, "online_store_config", None) and m.online_store_config.online_store_name
+}
+if batch_stores and batch_stores != {osn}:
+    raise ValueError(
+        f"Single-store invariant violated: Part 1 batch features are in online store(s) {batch_stores}, "
+        f"but this notebook targets '{osn}'. Route-optimized serving (nb09) requires ALL of a model's "
+        f"features in ONE online store. Re-run nb03 and nb08 with the same --var online_store_name, or "
+        f"pass online_store_name={list(batch_stores)[0]} here."
+    )
+
 # Idempotent: only materialize if not already materialized online (re-runnable notebook).
 already = [m for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.cust_clicks_10m") if m.is_online]
 if already:
