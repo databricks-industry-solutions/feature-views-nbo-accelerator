@@ -144,8 +144,14 @@ from databricks.sdk.service.serving import (
 )
 w = WorkspaceClient()
 ENDPOINT, SERVED = "nbo-ranker-online", "nbo-online-ro"
+# scale_to_zero_enabled=True so the endpoint costs nothing while idle — the right default for an
+# accelerator someone clones and forgets about. Trade-off: after ~30 min idle the endpoint scales to
+# zero and the next request pays a cold start (tens of seconds), so the latency numbers in notebook
+# 06 are WARM numbers. For a live demo or a latency benchmark, warm it with a few throwaway requests
+# first, or set scale_to_zero_enabled=False for the duration of the demo (and remember it then bills
+# continuously until you delete it).
 served = [ServedEntityInput(name=SERVED, entity_name=MODEL, entity_version=newest.version,
-                            workload_size="Small", scale_to_zero_enabled=False)]
+                            workload_size="Small", scale_to_zero_enabled=True)]
 if ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
     w.serving_endpoints.update_config(name=ENDPOINT, served_entities=served)
 else:

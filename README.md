@@ -50,7 +50,16 @@ online-lookup pattern, one more feature.
 >   this into seconds as the RollingWindow pipeline works through backlog — that's throughput-under-load,
 >   not steady-state freshness.
 > - ✅ **Serving latency measured.** Feature-read + rank-all **≈ p50 33ms / p95 41ms / p99 49ms**
->   (interactive, incl. cross-region WAN; in-region lower).
+>   (interactive, incl. cross-region WAN; in-region lower). Measured **warm** — see the cold-start note
+>   below.
+>
+> **Endpoints scale to zero by default.** Both ranking endpoints are created with
+> `scale_to_zero_enabled=True`, so a cloned accelerator costs nothing while idle. The trade-off: after
+> an idle period the endpoint scales to zero and the next request pays a **cold start** (tens of
+> seconds). The latency numbers above are warm-path numbers — send a few throwaway requests before
+> benchmarking or demoing. If you need guaranteed-warm latency for a live demo, flip
+> `scale_to_zero_enabled=False` in notebook 05 / 09 for its duration, and remember the endpoint then
+> bills continuously until you delete it.
 >
 > **Querying a route-optimized endpoint** (nb06/nb09/nb10): these endpoints accept **only** an OAuth
 > token downscoped to the endpoint. `serving_endpoints_data_plane.query()` handles this from an
@@ -96,7 +105,7 @@ Delta: customers, transactions, offers, labels
   auto-fetches the customer features from the online store by `customer_id`. For the 40-offer
   catalog you score every offer directly.
 - **Latency (measured):** online feature-read + rank **p50 ~33ms / p95 ~41ms / p99 ~49ms**
-  (route-optimized endpoint, scale-to-zero off; measured interactively incl. cross-region WAN RTT, so
+  (route-optimized endpoint, **warm**; measured interactively incl. cross-region WAN RTT, so
   in-region is lower) — squarely in the personalization reference band (~10ms feature-read + ~30ms
   model-serving).
 

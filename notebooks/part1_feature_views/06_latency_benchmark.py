@@ -11,7 +11,7 @@
 # MAGIC
 # MAGIC | Stage | In-region estimate | Notes |
 # MAGIC |---|---|---|
-# MAGIC | Online feature read + rank (40 offers) | **~15ms** | route-optimized endpoint, scale-to-zero off |
+# MAGIC | Online feature read + rank (40 offers) | **~15ms** | route-optimized endpoint, warm (see note) |
 # MAGIC | (laptop-measured, incl ~80ms cross-region WAN RTT) | ~120–160ms | subtract WAN for in-region |
 # MAGIC
 # MAGIC No Vector Search here — for a 40-offer catalog you score everything directly. Retrieval is a

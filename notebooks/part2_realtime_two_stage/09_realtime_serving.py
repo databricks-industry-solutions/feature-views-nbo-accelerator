@@ -153,8 +153,11 @@ from databricks.sdk.service.serving import (
 )
 w = WorkspaceClient()
 ENDPOINT, SERVED = "nbo-ranker-realtime", "nbo-realtime-ro"
+# scale_to_zero_enabled=True so the endpoint costs nothing while idle (see notebook 05 for the same
+# choice). Trade-off: after idle it scales to zero and the next request pays a cold start, so warm
+# the endpoint before measuring latency (notebook 10) or demoing.
 served = [ServedEntityInput(name=SERVED, entity_name=MODEL, entity_version=newest.version,
-                            workload_size="Small", scale_to_zero_enabled=False)]
+                            workload_size="Small", scale_to_zero_enabled=True)]
 if ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
     w.serving_endpoints.update_config(name=ENDPOINT, served_entities=served)
 else:
