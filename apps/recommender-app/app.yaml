@@ -19,5 +19,7 @@ env:
     valueFrom: serving-endpoint
   - name: CATALOG
     value: "fins_industry_solutions"
+  # The app's service principal cannot auto-derive a per-user schema at runtime — set SCHEMA to the
+  # schema the data was deployed into (e.g. nbo_<your-username>, matching notebook 00's output).
   - name: SCHEMA
     value: "nbo"

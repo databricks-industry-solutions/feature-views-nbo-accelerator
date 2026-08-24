@@ -22,10 +22,14 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("online_store_name", "nbo")
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 osn = dbutils.widgets.get("online_store_name")
 
 from databricks.feature_engineering import FeatureEngineeringClient

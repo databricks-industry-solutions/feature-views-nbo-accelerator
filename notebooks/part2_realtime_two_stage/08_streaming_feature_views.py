@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Part 2 · 08 · Streaming Feature View — Freshest In-Session Intent
 # MAGIC Defines a **streaming** Feature View over Kafka/MSK, strictly following the Databricks docs:
@@ -29,12 +33,16 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
 dbutils.widgets.text("online_store_name", "nbo")
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 conn_name = dbutils.widgets.get("kafka_connection")
 topic = dbutils.widgets.get("topic")
 osn = dbutils.widgets.get("online_store_name")
@@ -75,14 +83,14 @@ if not ALLOW_STREAMING_ONLINE:
     print(msg)
     dbutils.notebook.exit(msg)
 
-STREAM_NAME = f"{catalog}.{schema}.session_events_stream"
-INGEST_TABLE = f"{catalog}.{schema}.session_events_ingest"
-
 # COMMAND ----------
 # MAGIC %md ## 1 · Create the Stream (per docs: this starts the managed ingestion pipeline)
 # MAGIC Schema is **JSON Schema** format. `event_time` is a date-time string so the FV timeseries
 # MAGIC column is TIMESTAMP.
 # COMMAND ----------
+STREAM_NAME = f"{catalog}.{schema}.session_events_stream"
+INGEST_TABLE = f"{catalog}.{schema}.session_events_ingest"
+
 PAYLOAD_JSON_SCHEMA = (
     '{'
     '  "type": "object",'

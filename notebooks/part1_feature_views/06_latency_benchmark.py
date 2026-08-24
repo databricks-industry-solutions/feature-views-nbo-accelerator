@@ -24,10 +24,14 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("ranker_endpoint", "nbo-ranker-online")
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 ranker_endpoint = dbutils.widgets.get("ranker_endpoint")
 
 import time
@@ -35,8 +39,6 @@ import statistics
 from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
-# Route-optimized endpoint → data-plane client (resolves data-plane URL + downscoped OAuth token).
-dp = w.serving_endpoints_data_plane
 
 # COMMAND ----------
 # MAGIC %md ## Candidate set = the full offer catalog; customer features looked up online by key
@@ -46,6 +48,39 @@ customers = [r.asDict() for r in
              spark.table(f"`{catalog}`.{schema}.customers").select(
                  "customer_id", "loyalty_tier", "risk_band").limit(200).collect()]
 print(f"{len(customers)} customers × {len(offers)} offers")
+
+# COMMAND ----------
+# MAGIC %md ## Warm, then benchmark
+# MAGIC A route-optimized endpoint requires an OAuth token **downscoped to the endpoint**. The
+# MAGIC notebook runtime identity cannot mint one (`w.serving_endpoints_data_plane` → `OAuth tokens
+# MAGIC are not available for runtime authentication`), so this queries via a **service principal**
+# MAGIC using `client_credentials` + `authorization_details` (`query_inference_endpoint`). The SP id
+# MAGIC and secret live in the `nbo` secret scope; the SP must have CAN_QUERY on the endpoint.
+# COMMAND ----------
+import requests, json
+
+ep   = w.serving_endpoints.get(name=ranker_endpoint)
+url  = ep.data_plane_info.query_info.endpoint_url            # full https://….../invocations
+EPID = ep.id                                                 # alphanumeric endpoint id
+host = w.config.host
+CID  = dbutils.secrets.get("nbo", "sp_client_id")
+CSEC = dbutils.secrets.get("nbo", "sp_client_secret")
+
+# Downscope the SP token to query_inference_endpoint on THIS endpoint (route-optimized requirement).
+authz = json.dumps([{"type": "workspace_permission", "object_type": "serving-endpoints",
+                     "object_path": f"/serving-endpoints/{EPID}",
+                     "actions": ["query_inference_endpoint"]}])
+resp = requests.post(f"{host}/oidc/v1/token", auth=(CID, CSEC),
+                     data={"grant_type": "client_credentials", "scope": "all-apis",
+                           "authorization_details": authz})
+if resp.status_code != 200:
+    raise RuntimeError(
+        f"SP token request failed: {resp.status_code} — {resp.text[:300]}\n"
+        "A 403 here means this compute's egress IP is not on the workspace IP access list. "
+        "Run this notebook on SERVERLESS compute (its egress NAT is allowlisted), not a classic "
+        "all-purpose cluster."
+    )
+tok = resp.json()["access_token"]
 
 def rank(customer_id):
     # Request carries ONLY customer_id + offer fields. The endpoint fetches the 5 customer
@@ -57,12 +92,12 @@ def rank(customer_id):
         "base_reward": float(o["base_reward"]),
         "tier_requirement": int(o["tier_requirement"]),
     } for o in offers]
-    return dp.query(name=ranker_endpoint, dataframe_records=recs).predictions
+    r = requests.post(url, headers={"Authorization": f"Bearer {tok}"},
+                      json={"dataframe_records": recs})
+    r.raise_for_status()
+    return r.json()["predictions"]
 
-# COMMAND ----------
-# MAGIC %md ## Warm, then benchmark
-# COMMAND ----------
-for i in range(12):
+for i in range(12):  # warm
     rank(customers[i % len(customers)]["customer_id"])
 
 N = 100
