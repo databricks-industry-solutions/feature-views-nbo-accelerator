@@ -180,14 +180,25 @@ print(f"{ENDPOINT} is READY.")
 from databricks.sdk.service.serving import (
     ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel,
 )
-sp_client_id = dbutils.secrets.get("nbo", "sp_client_id")
-w.serving_endpoints.update_permissions(  # PATCH: adds the grant, preserves owner/admin ACLs
-    serving_endpoint_id=w.serving_endpoints.get(name=ENDPOINT).id,
-    access_control_list=[ServingEndpointAccessControlRequest(
-        service_principal_name=sp_client_id,
-        permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
-)
-print(f"Granted CAN_QUERY on {ENDPOINT} to benchmark SP {sp_client_id}.")
+# The benchmark SP lives in the `nbo` secret scope, which only the route-optimized latency
+# benchmark (06) needs. Guard the read so a Part-1-only run without that scope still finishes:
+# the endpoint is already deployed above — don't hard-fail here just because 06's SP is absent.
+try:
+    sp_client_id = dbutils.secrets.get("nbo", "sp_client_id")
+except Exception:
+    sp_client_id = None
+if sp_client_id:
+    w.serving_endpoints.update_permissions(  # PATCH: adds the grant, preserves owner/admin ACLs
+        serving_endpoint_id=w.serving_endpoints.get(name=ENDPOINT).id,
+        access_control_list=[ServingEndpointAccessControlRequest(
+            service_principal_name=sp_client_id,
+            permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
+    )
+    print(f"Granted CAN_QUERY on {ENDPOINT} to benchmark SP {sp_client_id}.")
+else:
+    print("Skipped benchmark-SP grant: `nbo` secret scope / sp_client_id not found. "
+          "The endpoint is deployed and usable; set up the `nbo` scope to run the "
+          "route-optimized latency benchmark (06).")
 
 # COMMAND ----------
 # MAGIC %md ## Query — request carries only customer_id + offer fields; features fetched online
