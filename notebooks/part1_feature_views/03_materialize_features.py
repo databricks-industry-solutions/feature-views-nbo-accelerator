@@ -22,10 +22,14 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("online_store_name", "nbo")
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 osn = dbutils.widgets.get("online_store_name")
 
 from databricks.feature_engineering import FeatureEngineeringClient
@@ -75,12 +79,45 @@ else:
     )
 
 # COMMAND ----------
-# MAGIC %md ## Inspect the provisioned pipelines
+# MAGIC %md ## Inspect the provisioned pipelines, then WAIT for the first online backfill
+# MAGIC `materialize_features` provisions the sync pipelines **async** — the online tables
+# MAGIC (`nbo_on_*`) are created and populated only once the first backfill completes. The
+# MAGIC downstream endpoint (notebook 05) looks these up by `customer_id`, so we **block here until
+# MAGIC every online table is queryable**. Without this gate, 05 races ahead (training in 04 is not a
+# MAGIC long enough buffer) and fails with
+# MAGIC `RESOURCE_DOES_NOT_EXIST: Feature table '...nbo_on_*' does not exist`.
 # COMMAND ----------
-for f in ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
-          "cust_loyalty_tier", "cust_risk_band"]:
+import time
+
+FEATS = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
+         "cust_loyalty_tier", "cust_risk_band"]
+online_tables = set()
+for f in FEATS:
     for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.{f}"):
         print(f"{f:24s} online={m.is_online}  table={m.table_name}")
+        if m.is_online:
+            # normalize to a fully-qualified 3-level name for the readiness probe
+            t = m.table_name
+            online_tables.add(t if t.count(".") >= 2 else f"{catalog}.{schema}.{t.split('.')[-1]}")
+
+print("\nWaiting for online tables to finish their first backfill:", sorted(online_tables))
+deadline = time.time() + 30 * 60  # generous cap; first backfill is typically a few minutes
+pending = set(online_tables)
+while pending and time.time() < deadline:
+    for t in list(pending):
+        try:
+            spark.sql(f"SELECT 1 FROM {t} LIMIT 1").collect()
+            pending.discard(t)
+            print(f"  ready: {t}")
+        except Exception:
+            pass  # table not created / not queryable yet — keep polling
+    if pending:
+        time.sleep(20)
+if pending:
+    raise TimeoutError(
+        f"Online tables not queryable after 30 min: {sorted(pending)}. "
+        "Inspect the 'Synced table: ...' pipelines before deploying the endpoint (05).")
+print("All online tables ready — safe to train (04) and deploy the endpoint (05).")
 
 # COMMAND ----------
 # MAGIC %md

@@ -17,25 +17,43 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("ranker_endpoint", "nbo-ranker-realtime")
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("service_credential", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 ranker_endpoint = dbutils.widgets.get("ranker_endpoint")
 conn_name = dbutils.widgets.get("kafka_connection")
 service_credential = dbutils.widgets.get("service_credential")
 topic = dbutils.widgets.get("topic")
 
+# --- Preflight gate (same switch as notebook 08) ---
+# This benchmark queries the realtime endpoint and measures streaming freshness over MSK, both of
+# which depend on Part 2's streaming path (notebooks 07/08/09). Part 2 is gated OFF by default, so
+# gate here to skip cleanly instead of failing on a missing endpoint / feature. Opt in with
+# allow_streaming_online=true once the MSK infra is configured.
+dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
+if dbutils.widgets.get("allow_streaming_online") != "true":
+    msg = ("Streaming latency & freshness benchmark skipped: Part 2 streaming is gated "
+           "(allow_streaming_online=false). Part 1's latency benchmark (notebook 06) covers the "
+           "feature-read + rank story. Set allow_streaming_online=true (with working MSK infra) to "
+           "run Part 2, then re-run.")
+    print(msg); dbutils.notebook.exit(msg)
+
 import time
+import json
 import statistics
+import requests
 import pandas as pd
 from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
-dp = w.serving_endpoints_data_plane  # route-optimized → data-plane client
 
 def pct(a, p):
     return round(sorted(a)[min(len(a) - 1, int(len(a) * p / 100))], 1)
@@ -45,20 +63,44 @@ def pct(a, p):
 # MAGIC Request carries only `customer_id` + offer fields; the endpoint looks up all 6 customer
 # MAGIC features (incl. streaming `cust_clicks_10m`) online and scores the full offer catalog.
 # MAGIC
-# MAGIC **Auth note (route-optimized endpoints):** `serving_endpoints_data_plane.query()` needs an
-# MAGIC OAuth token downscoped to the endpoint. It works from an **interactive** notebook (U2M) but
-# MAGIC raises `OAuth tokens are not available for runtime authentication` under a serverless **job**
-# MAGIC runtime identity — a job/notebook runtime token cannot query a route-optimized endpoint, and
-# MAGIC PATs are unsupported. Run this notebook **interactively**, or query with a service principal via
-# MAGIC `client_credentials` + `authorization_details` (see
-# MAGIC https://docs.databricks.com/aws/en/machine-learning/model-serving/query-route-optimization).
-# MAGIC Measured (interactive, incl. cross-region WAN): **feature-read + rank p50 ≈ 33ms / p95 ≈ 41ms /
-# MAGIC p99 ≈ 49ms**.
+# MAGIC **Auth (route-optimized endpoints):** these require an OAuth token **downscoped to the
+# MAGIC endpoint**. The notebook runtime identity cannot mint one (`serving_endpoints_data_plane.query()`
+# MAGIC → `OAuth tokens are not available for runtime authentication`; PATs unsupported), so this queries
+# MAGIC via a **service principal** using `client_credentials` + `authorization_details`
+# MAGIC (`query_inference_endpoint`). The SP id/secret live in the `nbo` secret scope and the SP must have
+# MAGIC CAN_QUERY on the endpoint. **Run on SERVERLESS compute** — the workspace enforces an IP access
+# MAGIC list and only serverless egress is allowlisted; a classic cluster gets a 403 on the token request.
+# MAGIC https://docs.databricks.com/aws/en/machine-learning/model-serving/query-route-optimization
+# MAGIC Measured (incl. cross-region WAN): **feature-read + rank p50 ≈ 33ms / p95 ≈ 41ms / p99 ≈ 49ms**.
 # COMMAND ----------
 offers = [r.asDict() for r in spark.table(f"`{catalog}`.{schema}.offers").collect()]
 customers = [r.asDict() for r in
              spark.table(f"`{catalog}`.{schema}.customers").select("customer_id").limit(200).collect()]
 print(f"{len(customers)} customers × {len(offers)} offers")
+
+# Mint a SERVICE-PRINCIPAL token downscoped to this endpoint (client_credentials + authorization_details).
+# The notebook runtime identity can't mint one; the SP can. SP id/secret come from the `nbo` secret scope.
+ep   = w.serving_endpoints.get(name=ranker_endpoint)
+url  = ep.data_plane_info.query_info.endpoint_url   # full https://….../invocations
+EPID = ep.id                                        # alphanumeric endpoint id
+host = w.config.host
+CID  = dbutils.secrets.get("nbo", "sp_client_id")
+CSEC = dbutils.secrets.get("nbo", "sp_client_secret")
+
+authz = json.dumps([{"type": "workspace_permission", "object_type": "serving-endpoints",
+                     "object_path": f"/serving-endpoints/{EPID}",
+                     "actions": ["query_inference_endpoint"]}])
+resp = requests.post(f"{host}/oidc/v1/token", auth=(CID, CSEC),
+                     data={"grant_type": "client_credentials", "scope": "all-apis",
+                           "authorization_details": authz})
+if resp.status_code != 200:
+    raise RuntimeError(
+        f"SP token request failed: {resp.status_code} — {resp.text[:300]}\n"
+        "A 403 here means this compute's egress IP is not on the workspace IP access list. "
+        "Run this notebook on SERVERLESS compute (its egress NAT is allowlisted), not a classic "
+        "all-purpose cluster."
+    )
+tok = resp.json()["access_token"]
 
 def rank(customer_id):
     recs = [{
@@ -68,32 +110,27 @@ def rank(customer_id):
         "base_reward": float(o["base_reward"]),
         "tier_requirement": int(o["tier_requirement"]),
     } for o in offers]
-    return dp.query(name=ranker_endpoint, dataframe_records=recs).predictions
+    r = requests.post(url, headers={"Authorization": f"Bearer {tok}"},
+                      json={"dataframe_records": recs})
+    r.raise_for_status()
+    return r.json()["predictions"]
 
 serving = None
-try:
-    for i in range(12):  # warm
-        rank(customers[i % len(customers)]["customer_id"])
+for i in range(12):  # warm
+    rank(customers[i % len(customers)]["customer_id"])
 
-    N = 100
-    lat = []
-    for i in range(N):
-        t0 = time.perf_counter()
-        rank(customers[i % len(customers)]["customer_id"])
-        lat.append((time.perf_counter() - t0) * 1000)
+N = 100
+lat = []
+for i in range(N):
+    t0 = time.perf_counter()
+    rank(customers[i % len(customers)]["customer_id"])
+    lat.append((time.perf_counter() - t0) * 1000)
 
-    serving = {"p50": pct(lat, 50), "p95": pct(lat, 95), "p99": pct(lat, 99),
-               "mean": round(statistics.mean(lat), 1)}
-    print(f"feature-read + rank ({len(offers)} offers): "
-          f"p50={serving['p50']}  p95={serving['p95']}  p99={serving['p99']}ms")
-    print("NOTE: measured from this driver; subtract cross-region WAN RTT for the in-region number.")
-except Exception as e:
-    if "OAuth tokens are not available" in str(e):
-        print("Skipping serving-latency benchmark: this is running under serverless JOB runtime auth, "
-              "which cannot mint the OAuth token a route-optimized endpoint requires. Run this notebook "
-              "INTERACTIVELY (U2M) to benchmark, or use a service-principal client_credentials token.")
-    else:
-        raise
+serving = {"p50": pct(lat, 50), "p95": pct(lat, 95), "p99": pct(lat, 99),
+           "mean": round(statistics.mean(lat), 1)}
+print(f"feature-read + rank ({len(offers)} offers): "
+      f"p50={serving['p50']}  p95={serving['p95']}  p99={serving['p99']}ms")
+print("NOTE: measured from this driver; subtract cross-region WAN RTT for the in-region number.")
 
 # COMMAND ----------
 # MAGIC %md ## 2 · Freshness — event → online availability (live-measured)
@@ -107,12 +144,10 @@ from pyspark.sql import functions as F
 fe = FeatureEngineeringClient()
 conn = w.connections.get(name=conn_name)
 BOOTSTRAP = dict(conn.options or {})["bootstrap_servers"]
-KAFKA_OPTS = {
-    "kafka.bootstrap.servers": BOOTSTRAP,
-    "databricks.serviceCredential": service_credential,
-    "kafka.security.protocol": "SASL_SSL",
-    "kafka.sasl.mechanism": "AWS_MSK_IAM",
-}
+# Match nb07's working producer options: bootstrap + service credential only. Adding
+# kafka.security.protocol / kafka.sasl.mechanism alongside a service credential is rejected as
+# conflicting (see nb07), so they are intentionally omitted here.
+KAFKA_OPTS = {"kafka.bootstrap.servers": BOOTSTRAP, "databricks.serviceCredential": service_credential}
 
 def emit_marker(customer_id, n=5):
     """Produce n marker events for customer_id to the topic (Spark Kafka write)."""
@@ -121,7 +156,7 @@ def emit_marker(customer_id, n=5):
         F.to_json(F.struct(
             F.concat(F.lit("mark_"), (F.lit(int(time.time() * 1000)) + F.col("id")).cast("string")).alias("event_id"),
             F.lit(customer_id).alias("customer_id"),
-            (F.lit(int(time.time() * 1000))).cast("long").alias("event_time"),
+            F.date_format(F.current_timestamp(), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("event_time"),
             F.lit("marker").alias("event_type"),
             F.lit("credit_card").alias("product_category"),
             F.lit(1000).alias("dwell_ms"),

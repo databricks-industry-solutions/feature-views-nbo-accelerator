@@ -18,8 +18,12 @@ variables:
     description: Unity Catalog catalog (standard storage — required for streaming Feature Views)
     default: fins_industry_solutions
   schema:
-    description: Schema for all accelerator assets
-    default: nbo
+    description: >-
+      Schema for all accelerator assets. Leave BLANK to auto-derive a per-user schema
+      nbo_<username> in every notebook (recommended for a shared catalog). Pin one shared
+      schema across a job DAG with --var schema=<name>. Note: a job running as a service
+      principal derives nbo_<sp-name> when blank.
+    default: ""
   online_store_name:
     description: Lakebase online store name (DNS-compliant — lowercase, no underscores). Keep it a simple single word so the streaming FS sink emits an unquoted Postgres target. Batch and streaming features must share this one store (multi-store lookup is unsupported and breaks route-optimized serving).
     default: nbo

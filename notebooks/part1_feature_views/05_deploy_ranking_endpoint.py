@@ -24,9 +24,13 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 
 import mlflow
 import pandas as pd
@@ -164,6 +168,37 @@ else:
 print(f"Waiting for {ENDPOINT} to become READY (build + provision can take ~10-20 min on first deploy)...")
 w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
 print(f"{ENDPOINT} is READY.")
+
+# COMMAND ----------
+# MAGIC %md ## Grant the benchmark service principal CAN_QUERY (route-optimized query path)
+# MAGIC Notebook 06 queries this **route-optimized** endpoint with an OAuth token *downscoped* to
+# MAGIC `query_inference_endpoint`, minted from the SP creds in the `nbo` secret scope. Minting that
+# MAGIC token requires the SP to hold `CAN_QUERY` on the endpoint. Since the endpoint is (re)created
+# MAGIC here on every run, we (re)apply the grant now — otherwise 06 fails with
+# MAGIC `invalid_authorization_details: User is not authorized to the requested authorizations`.
+# COMMAND ----------
+from databricks.sdk.service.serving import (
+    ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel,
+)
+# The benchmark SP lives in the `nbo` secret scope, which only the route-optimized latency
+# benchmark (06) needs. Guard the read so a Part-1-only run without that scope still finishes:
+# the endpoint is already deployed above — don't hard-fail here just because 06's SP is absent.
+try:
+    sp_client_id = dbutils.secrets.get("nbo", "sp_client_id")
+except Exception:
+    sp_client_id = None
+if sp_client_id:
+    w.serving_endpoints.update_permissions(  # PATCH: adds the grant, preserves owner/admin ACLs
+        serving_endpoint_id=w.serving_endpoints.get(name=ENDPOINT).id,
+        access_control_list=[ServingEndpointAccessControlRequest(
+            service_principal_name=sp_client_id,
+            permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
+    )
+    print(f"Granted CAN_QUERY on {ENDPOINT} to benchmark SP {sp_client_id}.")
+else:
+    print("Skipped benchmark-SP grant: `nbo` secret scope / sp_client_id not found. "
+          "The endpoint is deployed and usable; set up the `nbo` scope to run the "
+          "route-optimized latency benchmark (06).")
 
 # COMMAND ----------
 # MAGIC %md ## Query — request carries only customer_id + offer fields; features fetched online

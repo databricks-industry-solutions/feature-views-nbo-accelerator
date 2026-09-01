@@ -28,23 +28,40 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("service_credential", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
 dbutils.widgets.text("mode", "bounded", "bounded | continuous")
 dbutils.widgets.text("num_events", "200000")
-dbutils.widgets.text("events_per_sec", "2000")
+dbutils.widgets.text("events_per_sec", "25")  # continuous: rows/sec. LOW (~20-25) for a clean nb10 §2b freshness read; raise for a load test.
 dbutils.widgets.text("duration_sec", "300")  # continuous mode: how long to keep bursting
 
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 conn_name = dbutils.widgets.get("kafka_connection")
 service_credential = dbutils.widgets.get("service_credential")
 topic = dbutils.widgets.get("topic")
 mode = dbutils.widgets.get("mode")
 num_events = int(dbutils.widgets.get("num_events"))
 events_per_sec = int(dbutils.widgets.get("events_per_sec"))
+
+# --- Preflight gate (same switch as notebook 08) ---
+# This producer writes to MSK, which needs a working `msk_kafka` UC connection + service credential
+# (AWS IAM). Part 2's streaming path is gated OFF by default so the e2e runs green on Part 1 (the
+# fully-working path). Gating here — before any MSK access — makes a gated run skip cleanly instead
+# of failing on temporary-service-credentials / AssumeRole. Opt in once the MSK infra is configured.
+dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
+if dbutils.widgets.get("allow_streaming_online") != "true":
+    msg = ("Kafka/MSK producer skipped: Part 2 streaming is gated (allow_streaming_online=false). "
+           "Part 1 covers the full author-once / online-lookup / ranking story end-to-end. To run "
+           "Part 2, ensure the msk_kafka connection + service credential (MSK cluster) work and set "
+           "the widget allow_streaming_online=true, then re-run.")
+    print(msg); dbutils.notebook.exit(msg)
 
 import os
 import re
@@ -142,8 +159,11 @@ if mode == "continuous":
     deadline = _t.time() + duration_sec
     bursts = 0
     while _t.time() < deadline:
-        seq0 = int(_t.time() * 1000)
+        t_burst = _t.time()
+        seq0 = int(t_burst * 1000)
         events = to_events(spark.range(seq0, seq0 + events_per_burst).withColumnRenamed("id", "seq"), "seq")
         events.write.format("kafka").options(**KAFKA_OPTS).option("topic", topic).save()
         bursts += 1
+        # Throttle to ~events_per_sec (one burst/sec). Keep the rate LOW (~20-25/s) for a clean nb10 §2b read.
+        _t.sleep(max(0.0, 1.0 - (_t.time() - t_burst)))
     print(f"Produced {bursts} bursts × ~{events_per_burst} events over ~{duration_sec}s to '{topic}'.")

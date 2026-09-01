@@ -1,52 +1,65 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 00 · Setup
-# MAGIC Configure catalog/schema, create the Lakebase online store, and set permissions.
+# MAGIC Configure catalog/schema and create the Lakebase online store.
 # MAGIC
-# MAGIC **Prereqs:** DBR 17.0 ML+, `databricks-feature-engineering>=0.16.0`, a catalog on
-# MAGIC standard storage (required for streaming Feature Views).
+# MAGIC **Prereqs:** DBR 17.0 ML+, `databricks-feature-engineering>=0.16.0`, and a **pre-existing**
+# MAGIC Unity Catalog catalog on **standard storage** (required for streaming Feature Views). This
+# MAGIC notebook **assumes the catalog already exists** (most users cannot `CREATE CATALOG`); set
+# MAGIC `create_catalog=true` only if you hold that privilege. Data lands in a **per-user schema**
+# MAGIC `nbo_<username>` by default — override with the `schema` widget.
 
 # COMMAND ----------
 # MAGIC %pip install "databricks-feature-engineering>=0.16.0"
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "nbo_accelerator")
-dbutils.widgets.text("schema", "main")
+dbutils.widgets.text("catalog", "fins_industry_solutions")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("online_store_name", "nbo")
+dbutils.widgets.dropdown("create_catalog", "false", ["false", "true"])  # true only if you hold CREATE CATALOG
 
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 online_store_name = dbutils.widgets.get("online_store_name")
+create_catalog = dbutils.widgets.get("create_catalog") == "true"
 
 # COMMAND ----------
-# Catalog/schema provisioning is check-then-create (like the online store, features, and
-# materialization below) so this is safely re-runnable AND portable across account types.
-# On accounts with **Default Storage** enabled, a bare `CREATE CATALOG IF NOT EXISTS` throws
-# INVALID_STATE ("Metastore storage root URL does not exist ... provide a storage location"):
-# the analyzer validates the missing MANAGED LOCATION before IF NOT EXISTS can short-circuit,
-# so it errors even when the catalog already exists. We therefore only CREATE when the catalog
-# is genuinely absent, and let a pre-provisioned catalog (any storage type) be reused as-is.
+# Catalog handling is customer-safe by default: most users do NOT have CREATE CATALOG on the
+# metastore, so we ASSUME the catalog already exists and simply reuse it. Only when you explicitly
+# opt in (create_catalog=true) AND hold the privilege do we attempt to create it. Streaming Feature
+# Views (Part 2) require a catalog on STANDARD storage (not Default Storage).
 from databricks.sdk import WorkspaceClient
 _w = WorkspaceClient()
 
 _catalog_exists = any(c.name == catalog for c in _w.catalogs.list())
-if not _catalog_exists:
-    # Absent → create it. Prefer a plain create; if the account requires an explicit managed
+if _catalog_exists:
+    print(f"Catalog {catalog} already exists — reusing it.")
+elif not create_catalog:
+    raise RuntimeError(
+        f"Catalog {catalog!r} does not exist. Most users cannot CREATE CATALOG — ask your metastore "
+        f"admin to create it on STANDARD storage (streaming Feature Views require non-default storage) "
+        f"and grant you USE CATALOG + CREATE SCHEMA. If you DO hold the CREATE CATALOG privilege, set "
+        f"the create_catalog widget to 'true' and re-run."
+    )
+else:
+    # Opted in + privileged. Prefer a plain create; if the account requires an explicit managed
     # location (Default Storage disabled with no default root), surface a clear, actionable error.
     try:
         spark.sql(f"CREATE CATALOG IF NOT EXISTS `{catalog}`")
     except Exception as e:
         raise RuntimeError(
-            f"Catalog {catalog!r} does not exist and could not be auto-created ({e}). "
-            f"Create it once in the UI (or via `CREATE CATALOG {catalog} MANAGED LOCATION '<s3/abfss uri>'`) "
-            f"on a standard-storage location, then re-run. Streaming Feature Views (Part 2) require "
-            f"standard (non-default) storage."
+            f"Catalog {catalog!r} could not be created ({e}). Create it once in the UI (or via "
+            f"`CREATE CATALOG {catalog} MANAGED LOCATION '<s3/abfss uri>'`) on a standard-storage "
+            f"location, then re-run. Streaming Feature Views (Part 2) require standard (non-default) storage."
         ) from e
     print(f"Created catalog {catalog}.")
-else:
-    print(f"Catalog {catalog} already exists — reusing it.")
 
+# Requires CREATE SCHEMA on the catalog (see README prerequisites).
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`")
 spark.sql(f"USE `{catalog}`.`{schema}`")
 

@@ -2,7 +2,9 @@
 # MAGIC %md
 # MAGIC # 01 · Generate Synthetic FSI Data
 # MAGIC Fully synthetic, reproducible retail-banking dataset — no external licensing.
-# MAGIC All randomness is seeded so re-runs are deterministic.
+# MAGIC All randomness is a deterministic hash of the row `id`, so re-runs produce the **exact same
+# MAGIC dataset on any cluster shape / serverless autoscale** (unlike Spark's partition-dependent
+# MAGIC `rand(seed)`).
 # MAGIC
 # MAGIC Produces five Delta tables in `${catalog}.${schema}`:
 # MAGIC - `customers`      — demographics, tenure, loyalty tier, risk band (latest-attribute source)
@@ -17,9 +19,13 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 spark.sql(f"USE `{catalog}`.{schema}")
 
 # COMMAND ----------
@@ -31,19 +37,31 @@ N_TRANSACTIONS = 5_000_000
 N_SESSION_EVENTS = 20_000_000
 N_LABELS = 400_000
 
+# Deterministic per-row uniform in [0,1): a stable hash of the row `id` + a per-column salt.
+# Unlike Spark's rand(seed) (partition-dependent), this reproduces the EXACT same dataset on
+# any cluster shape / serverless autoscale. Distinct salts keep columns decorrelated.
+# CAST AS DOUBLE is load-bearing: `bigint / 1000000000.0` is DECIMAL division in Spark, so every
+# column derived from u() (amounts, balances, base_reward, ...) would inherit a decimal type.
+# Decimal breaks two downstream surfaces: MLflow model signatures reject decimal (fe.log_model
+# would register a signature-less model that UC refuses), and the Lakebase online feature store
+# rejects PostgreSQL NUMERIC (endpoint deploy fails with "Online feature store setup failed").
+# Returning DOUBLE here fixes the whole class at the source.
+def u(salt: str) -> str:
+    return f"CAST(pmod(xxhash64(CAST(id AS STRING), '{salt}'), 1000000000) / 1000000000.0 AS DOUBLE)"
+
 # COMMAND ----------
 # MAGIC %md ## Customers — latest-attribute source (ColumnSelection features read this)
 # COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE customers AS
 SELECT concat('cust_', id) AS customer_id,
-       CAST(21 + (rand(1)*54) AS INT) AS age,
-       element_at(array('CA','NY','TX','FL','WA','IL','MA','GA'), CAST(rand(2)*8 AS INT)+1) AS state,
-       element_at(array('bronze','silver','gold','platinum'), CAST(pow(rand(3),2)*4 AS INT)+1) AS loyalty_tier,
-       element_at(array('low','medium','high'), CAST(rand(4)*3 AS INT)+1) AS risk_band,
-       ROUND(30000 + pow(rand(5),2)*220000, 0) AS annual_income,
-       CAST(rand(6)*120 AS INT) AS tenure_months,
-       CAST(from_unixtime(1700000000 + CAST(rand(7)*40000000 AS INT)) AS TIMESTAMP) AS updated_at
+       CAST(21 + ({u('c_age')}*54) AS INT) AS age,
+       element_at(array('CA','NY','TX','FL','WA','IL','MA','GA'), CAST({u('c_state')}*8 AS INT)+1) AS state,
+       element_at(array('bronze','silver','gold','platinum'), CAST(pow({u('c_tier')},2)*4 AS INT)+1) AS loyalty_tier,
+       element_at(array('low','medium','high'), CAST({u('c_risk')}*3 AS INT)+1) AS risk_band,
+       ROUND(30000 + pow({u('c_income')},2)*220000, 0) AS annual_income,
+       CAST({u('c_tenure')}*120 AS INT) AS tenure_months,
+       CAST(from_unixtime(1700000000 + CAST({u('c_updated')}*40000000 AS INT)) AS TIMESTAMP) AS updated_at
 FROM range(0, {N_CUSTOMERS}) AS t(id)
 """)
 
@@ -54,7 +72,7 @@ spark.sql(f"""
 CREATE OR REPLACE TABLE offers AS
 SELECT concat('offer_', id) AS offer_id,
        element_at(array('credit_card','savings','personal_loan','mortgage','investment'),
-                  CAST(rand(11)*5 AS INT)+1) AS product_category,
+                  CAST({u('o_cat')}*5 AS INT)+1) AS product_category,
        element_at(array(
          'Premium Rewards Credit Card with 3% cashback on all purchases',
          'High-Yield Savings Account with 4.5% APY and no minimum balance',
@@ -66,9 +84,9 @@ SELECT concat('offer_', id) AS offer_id,
          'Home Equity Line of Credit with variable rate and easy access',
          'Retirement IRA with tax advantages and employer matching guidance',
          'Business Credit Card with expense tracking and cashback rewards'),
-         CAST(rand(12)*10 AS INT)+1) AS offer_text,
-       ROUND(rand(13)*100, 2) AS base_reward,
-       CAST(rand(14)*3 AS INT)+1 AS tier_requirement
+         CAST({u('o_text')}*10 AS INT)+1) AS offer_text,
+       ROUND({u('o_reward')}*100, 2) AS base_reward,
+       CAST({u('o_tier')}*3 AS INT)+1 AS tier_requirement
 FROM range(0, {N_OFFERS}) AS t(id)
 """)
 
@@ -78,12 +96,12 @@ FROM range(0, {N_OFFERS}) AS t(id)
 spark.sql(f"""
 CREATE OR REPLACE TABLE transactions AS
 SELECT concat('txn_', id) AS txn_id,
-       concat('cust_', CAST(rand(21)*{N_CUSTOMERS} AS INT)) AS customer_id,
+       concat('cust_', CAST({u('t_cust')}*{N_CUSTOMERS} AS INT)) AS customer_id,
        element_at(array('groceries','dining','travel','retail','utilities','entertainment','healthcare','fuel'),
-                  CAST(rand(22)*8 AS INT)+1) AS category,
-       ROUND(5 + pow(rand(23),2)*2000, 2) AS amount,
-       ROUND(1000 + rand(24)*50000, 2) AS balance,
-       CAST(from_unixtime(1735689600 + CAST(rand(25)*15552000 AS INT)) AS TIMESTAMP) AS ts
+                  CAST({u('t_cat')}*8 AS INT)+1) AS category,
+       ROUND(5 + pow({u('t_amt')},2)*2000, 2) AS amount,
+       ROUND(1000 + {u('t_bal')}*50000, 2) AS balance,
+       CAST(from_unixtime(1735689600 + CAST({u('t_ts')}*15552000 AS INT)) AS TIMESTAMP) AS ts
 FROM range(0, {N_TRANSACTIONS}) AS t(id)
 """)
 
@@ -94,15 +112,15 @@ FROM range(0, {N_TRANSACTIONS}) AS t(id)
 spark.sql(f"""
 CREATE OR REPLACE TABLE session_events AS
 SELECT concat('evt_', id) AS event_id,
-       concat('cust_', CAST(rand(31)*{N_CUSTOMERS} AS INT)) AS customer_id,
-       concat('sess_', CAST(rand(32)*500000 AS INT)) AS session_id,
+       concat('cust_', CAST({u('s_cust')}*{N_CUSTOMERS} AS INT)) AS customer_id,
+       concat('sess_', CAST({u('s_sess')}*500000 AS INT)) AS session_id,
        element_at(array('page_view','product_view','calculator_use','add_to_cart','search'),
-                  CAST(rand(33)*5 AS INT)+1) AS event_type,
+                  CAST({u('s_etype')}*5 AS INT)+1) AS event_type,
        element_at(array('credit_card','savings','personal_loan','mortgage','investment'),
-                  CAST(rand(34)*5 AS INT)+1) AS product_category,
-       CAST(200 + rand(35)*44800 AS INT) AS dwell_ms,
-       element_at(array('ios','android','web'), CAST(rand(36)*3 AS INT)+1) AS device,
-       CAST(from_unixtime(1735689600 + CAST(rand(37)*15552000 AS INT)) AS TIMESTAMP) AS event_time
+                  CAST({u('s_pcat')}*5 AS INT)+1) AS product_category,
+       CAST(200 + {u('s_dwell')}*44800 AS INT) AS dwell_ms,
+       element_at(array('ios','android','web'), CAST({u('s_dev')}*3 AS INT)+1) AS device,
+       CAST(from_unixtime(1735689600 + CAST({u('s_time')}*15552000 AS INT)) AS TIMESTAMP) AS event_time
 FROM range(0, {N_SESSION_EVENTS}) AS t(id)
 """)
 
@@ -116,10 +134,10 @@ spark.sql(f"""
 CREATE OR REPLACE TABLE labels AS
 WITH base AS (
   SELECT concat('lbl_', id) AS record_id,
-         concat('cust_', CAST(rand(41)*{N_CUSTOMERS} AS INT)) AS customer_id,
-         concat('offer_', CAST(rand(42)*{N_OFFERS} AS INT)) AS offer_id,
-         CAST(from_unixtime(1748000000 + CAST(rand(43)*3000000 AS INT)) AS TIMESTAMP) AS ts,
-         rand(44) AS noise
+         concat('cust_', CAST({u('l_cust')}*{N_CUSTOMERS} AS INT)) AS customer_id,
+         concat('offer_', CAST({u('l_offer')}*{N_OFFERS} AS INT)) AS offer_id,
+         CAST(from_unixtime(1748000000 + CAST({u('l_ts')}*3000000 AS INT)) AS TIMESTAMP) AS ts,
+         {u('l_noise')} AS noise
   FROM range(0, {N_LABELS}) AS t(id)
 ),
 joined AS (

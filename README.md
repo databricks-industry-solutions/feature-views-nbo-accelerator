@@ -61,12 +61,12 @@ online-lookup pattern, one more feature.
 > `scale_to_zero_enabled=False` in notebook 05 / 09 for its duration, and remember the endpoint then
 > bills continuously until you delete it.
 >
-> **Querying a route-optimized endpoint** (nb06/nb09/nb10): these endpoints accept **only** an OAuth
-> token downscoped to the endpoint. `serving_endpoints_data_plane.query()` handles this from an
-> **interactive** notebook (U2M), but a serverless **job** runtime identity cannot mint that token
-> (raises `OAuth tokens are not available for runtime authentication`), and PATs are unsupported. Run
-> the benchmark notebooks interactively, or query with a service principal via `client_credentials` +
-> `authorization_details` — see
+> **Querying a route-optimized endpoint** (nb06/nb10): these endpoints accept **only** an OAuth token
+> downscoped to the endpoint, which the notebook runtime identity cannot mint (raises `OAuth tokens are
+> not available for runtime authentication`; PATs unsupported). nb06/nb10 therefore query via a **service
+> principal** (`client_credentials` + `authorization_details`) whose id/secret live in the **`nbo` secret
+> scope**, and they must run on **serverless** (only serverless egress is on the workspace IP access
+> list) — see **Prerequisites** and
 > [Query route-optimized endpoints](https://docs.databricks.com/aws/en/machine-learning/model-serving/query-route-optimization).
 > Notebook 08 still stops early unless you opt in (`allow_streaming_online=true`).
 
@@ -185,19 +185,23 @@ Part 1 batch online features (5) ───────────────�
    Override any variable with repeated `--var` flags (`--var catalog=… --var schema=…`).
    For convenience, copy the git-ignored **`deploy.local.sh`** template, fill in your profile +
    warehouse id, and run `./deploy.local.sh dev`.
-3. Run **`[NBO] Part 1`** end-to-end first. Then run **`[NBO] Part 2`** (it reuses Part 1's catalog,
-   features, online store, and ranker). Part 2 streaming online serving is gated — see the status
-   note above.
-4. Launch the recommender app and open the latency dashboard. Grant the app's service principal
-   `SELECT` on the catalog and `Can Query` on `nbo-ranker-online`.
+3. Run **`[NBO] Part 1`** end-to-end first, then **`[NBO] Part 2`** (it reuses Part 1's catalog,
+   features, online store, and ranker). By default each notebook writes to a **per-user schema**
+   `nbo_<username>` (auto-derived); pass `--var schema=<name>` (or the `schema` widget) to pin a
+   shared one. The benchmark notebooks (06/10) need the `nbo` service-principal secret scope and must
+   run on serverless — see **Prerequisites**. Part 2 streaming online serving is gated — see the
+   status note above.
+4. Launch the recommender app and open the latency dashboard. Set the app's `SCHEMA` env var to the
+   schema you deployed into, and grant the app's service principal `SELECT` on the catalog and
+   `Can Query` on `nbo-ranker-online`.
 
 ### Configurable variables (`--var name=value`)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `warehouse_id` | *(required)* | SQL warehouse for the app + dashboard |
-| `catalog` | `fins_industry_solutions` | UC catalog (standard storage) |
-| `schema` | `nbo` | Schema for all assets |
+| `catalog` | `fins_industry_solutions` | UC catalog (standard storage; assumed to exist) |
+| `schema` | *blank → auto* | Blank auto-derives a per-user `nbo_<username>` in every notebook. Set `--var schema=<name>` to pin one shared schema. |
 | `online_store_name` | `nbo` | Lakebase online store — keep it a simple single word (the streaming sink is sensitive to decorated names). **Batch + streaming features must share this one store**; multi-store lookup is unsupported on new Lakebase stores and breaks route-optimized serving. |
 | `kafka_connection` | `msk_kafka` | UC Kafka connection (Part 2) |
 | `service_credential` | `msk_kafka` | UC service credential for MSK IAM (Part 2) |
@@ -205,9 +209,62 @@ Part 1 batch online features (5) ───────────────�
 
 ### Prerequisites
 
-- DBR **17.0 ML** or later; `databricks-feature-engineering >= 0.16.0`; **serverless (latest env)**
-- **Lakebase** online store, **Model Serving** (Part 1); a **Kafka/MSK** UC connection (Part 2, DBR 19+ for streaming online)
-- A Unity Catalog catalog on **standard storage** (streaming Feature Views cannot use default storage)
+This is a complete, customer-facing checklist. Several items require a **workspace/metastore admin**
+or the customer's **AWS/MSK admin** — line them up before you start. "You" = the person running the
+notebooks.
+
+**Compute**
+- **Serverless** enabled (jobs and notebooks run on serverless; no clusters are defined).
+- Runtime equivalent to **DBR 17.0 ML+**; **DBR 19+** for Part 2 streaming-online materialization.
+- `databricks-feature-engineering >= 0.16.0` (installed per-notebook).
+- Benchmark notebooks **06** and **10 must run on serverless** (see the IP-access-list item below).
+
+**Unity Catalog (admin)**
+- A catalog on **standard storage** — streaming Feature Views **cannot** use Default Storage.
+- Most users **cannot `CREATE CATALOG`**. Have your **metastore admin** pre-create the catalog and
+  grant you `USE CATALOG` + `CREATE SCHEMA`. `00_setup` **assumes the catalog exists** by default;
+  set the `create_catalog` widget to `true` only if you personally hold `CREATE CATALOG`.
+- Data lands in a **per-user schema** `nbo_<username>` (auto-derived) — you need `CREATE SCHEMA` on
+  the catalog. Override with `--var schema=` / the `schema` widget to share one schema.
+
+**Lakebase (admin)**
+- **Lakebase online store** enabled and privilege to create one (`00_setup` creates store `nbo`).
+- Batch (Part 1) and streaming (Part 2) features **must share the same online store** — multi-store
+  lookup is unsupported on new Lakebase stores and breaks route-optimized serving.
+
+**Model Serving**
+- Model Serving enabled; privilege to create **route-optimized** endpoints
+  (`nbo-ranker-online`, `nbo-ranker-realtime`).
+
+**Kafka / MSK — Part 2 only (metastore admin + customer AWS/MSK admin)**
+- A **Unity Catalog Kafka connection** (default `msk_kafka`) holding the MSK bootstrap servers, and a
+  **UC service credential** (default `msk_kafka`) for **MSK IAM** auth — created by a metastore admin
+  with `CREATE CONNECTION`.
+- The customer's **AWS/MSK admin** must: allow the service credential's IAM role to **describe/create/
+  read/write** the topic (default `nbo-session-events`), and provide **network reachability from
+  serverless to MSK** (PrivateLink or NAT + security-group rules). Either grant topic auto-create or
+  pre-create the topic.
+
+**Service principal for route-optimized queries — nb06 / nb10 (admin)**
+- Route-optimized endpoints accept **only** an OAuth token **downscoped to the endpoint**; the notebook
+  runtime identity cannot mint one. nb06/nb10 therefore query via a **service principal**.
+- Create/identify an SP with an **OAuth client id + secret**, grant it **CAN_QUERY** on both endpoints,
+  and store its credentials in a secret scope named **`nbo`**:
+  ```bash
+  databricks secrets create-scope nbo
+  databricks secrets put-secret  nbo sp_client_id       # SP application/client id
+  databricks secrets put-secret  nbo sp_client_secret   # SP OAuth secret
+  ```
+- The workspace enforces an **IP access list**; only **serverless egress** is allowlisted, so run
+  nb06/nb10 on serverless (a classic cluster gets a **403** on the token request).
+
+**SQL warehouse + app grants**
+- A **SQL warehouse** for the app + dashboard (`--var warehouse_id=<id>`).
+- The **app's service principal** needs `SELECT` on the catalog and **CAN_QUERY** on `nbo-ranker-online`.
+
+**Reproducibility**
+- Synthetic data (nb01) is fully **row-deterministic** (hashed off the row id), so it regenerates
+  identically on any compute shape / serverless autoscale.
 
 ## Contributing
 

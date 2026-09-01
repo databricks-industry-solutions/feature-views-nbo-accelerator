@@ -21,9 +21,26 @@
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
-dbutils.widgets.text("schema", "nbo")
-catalog = dbutils.widgets.get("catalog")
-schema = dbutils.widgets.get("schema")
+dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+if not schema:
+    import re as _re
+    _user = spark.sql("SELECT current_user()").first()[0]
+    schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
+
+# --- Preflight gate (same switch as notebook 08) ---
+# This notebook re-logs the ranker with the streaming feature `cust_clicks_10m` and deploys the
+# realtime endpoint. Both require Part 2's streaming feature to be materialized (notebooks 07/08),
+# which is gated OFF by default. Gate here so a gated run skips cleanly instead of failing on a
+# missing streaming feature. Opt in with allow_streaming_online=true once the MSK infra works.
+dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
+if dbutils.widgets.get("allow_streaming_online") != "true":
+    msg = ("Streaming ranker re-log + realtime endpoint deploy skipped: Part 2 streaming is gated "
+           "(allow_streaming_online=false). Part 1 covers the full author-once / online-lookup / "
+           "ranking story end-to-end. Set allow_streaming_online=true (with working MSK infra) to "
+           "run Part 2, then re-run.")
+    print(msg); dbutils.notebook.exit(msg)
 
 import mlflow
 import pandas as pd
@@ -169,6 +186,26 @@ print(f"Route-optimized endpoint '{ENDPOINT}' deploying {MODEL} v{newest.version
 # Endpoint deploy is async — block until READY so notebook 10's benchmark doesn't hit a cold endpoint.
 w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
 print(f"{ENDPOINT} is READY.")
+
+# COMMAND ----------
+# MAGIC %md ## Grant the benchmark service principal CAN_QUERY (route-optimized query path)
+# MAGIC Notebook 10 queries this **route-optimized** endpoint with an OAuth token *downscoped* to
+# MAGIC `query_inference_endpoint`, minted from the SP creds in the `nbo` secret scope. Minting that
+# MAGIC token requires the SP to hold `CAN_QUERY` on the endpoint. Since the endpoint is (re)created
+# MAGIC here on every run, we (re)apply the grant now — otherwise 10 fails with
+# MAGIC `invalid_authorization_details: User is not authorized to the requested authorizations`.
+# COMMAND ----------
+from databricks.sdk.service.serving import (
+    ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel,
+)
+sp_client_id = dbutils.secrets.get("nbo", "sp_client_id")
+w.serving_endpoints.update_permissions(  # PATCH: adds the grant, preserves owner/admin ACLs
+    serving_endpoint_id=w.serving_endpoints.get(name=ENDPOINT).id,
+    access_control_list=[ServingEndpointAccessControlRequest(
+        service_principal_name=sp_client_id,
+        permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
+)
+print(f"Granted CAN_QUERY on {ENDPOINT} to benchmark SP {sp_client_id}.")
 
 # COMMAND ----------
 # MAGIC %md ## Rank-all serving — request carries only customer_id + offer fields
