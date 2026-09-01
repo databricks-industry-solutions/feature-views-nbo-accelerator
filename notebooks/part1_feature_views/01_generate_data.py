@@ -40,8 +40,14 @@ N_LABELS = 400_000
 # Deterministic per-row uniform in [0,1): a stable hash of the row `id` + a per-column salt.
 # Unlike Spark's rand(seed) (partition-dependent), this reproduces the EXACT same dataset on
 # any cluster shape / serverless autoscale. Distinct salts keep columns decorrelated.
+# CAST AS DOUBLE is load-bearing: `bigint / 1000000000.0` is DECIMAL division in Spark, so every
+# column derived from u() (amounts, balances, base_reward, ...) would inherit a decimal type.
+# Decimal breaks two downstream surfaces: MLflow model signatures reject decimal (fe.log_model
+# would register a signature-less model that UC refuses), and the Lakebase online feature store
+# rejects PostgreSQL NUMERIC (endpoint deploy fails with "Online feature store setup failed").
+# Returning DOUBLE here fixes the whole class at the source.
 def u(salt: str) -> str:
-    return f"(pmod(xxhash64(CAST(id AS STRING), '{salt}'), 1000000000) / 1000000000.0)"
+    return f"CAST(pmod(xxhash64(CAST(id AS STRING), '{salt}'), 1000000000) / 1000000000.0 AS DOUBLE)"
 
 # COMMAND ----------
 # MAGIC %md ## Customers — latest-attribute source (ColumnSelection features read this)

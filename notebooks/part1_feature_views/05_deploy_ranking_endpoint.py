@@ -170,6 +170,26 @@ w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
 print(f"{ENDPOINT} is READY.")
 
 # COMMAND ----------
+# MAGIC %md ## Grant the benchmark service principal CAN_QUERY (route-optimized query path)
+# MAGIC Notebook 06 queries this **route-optimized** endpoint with an OAuth token *downscoped* to
+# MAGIC `query_inference_endpoint`, minted from the SP creds in the `nbo` secret scope. Minting that
+# MAGIC token requires the SP to hold `CAN_QUERY` on the endpoint. Since the endpoint is (re)created
+# MAGIC here on every run, we (re)apply the grant now — otherwise 06 fails with
+# MAGIC `invalid_authorization_details: User is not authorized to the requested authorizations`.
+# COMMAND ----------
+from databricks.sdk.service.serving import (
+    ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel,
+)
+sp_client_id = dbutils.secrets.get("nbo", "sp_client_id")
+w.serving_endpoints.update_permissions(  # PATCH: adds the grant, preserves owner/admin ACLs
+    serving_endpoint_id=w.serving_endpoints.get(name=ENDPOINT).id,
+    access_control_list=[ServingEndpointAccessControlRequest(
+        service_principal_name=sp_client_id,
+        permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
+)
+print(f"Granted CAN_QUERY on {ENDPOINT} to benchmark SP {sp_client_id}.")
+
+# COMMAND ----------
 # MAGIC %md ## Query — request carries only customer_id + offer fields; features fetched online
 # MAGIC ```python
 # MAGIC dp = w.serving_endpoints_data_plane   # route-optimized → data-plane client

@@ -50,6 +50,19 @@ mode = dbutils.widgets.get("mode")
 num_events = int(dbutils.widgets.get("num_events"))
 events_per_sec = int(dbutils.widgets.get("events_per_sec"))
 
+# --- Preflight gate (same switch as notebook 08) ---
+# This producer writes to MSK, which needs a working `msk_kafka` UC connection + service credential
+# (AWS IAM). Part 2's streaming path is gated OFF by default so the e2e runs green on Part 1 (the
+# fully-working path). Gating here — before any MSK access — makes a gated run skip cleanly instead
+# of failing on temporary-service-credentials / AssumeRole. Opt in once the MSK infra is configured.
+dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
+if dbutils.widgets.get("allow_streaming_online") != "true":
+    msg = ("Kafka/MSK producer skipped: Part 2 streaming is gated (allow_streaming_online=false). "
+           "Part 1 covers the full author-once / online-lookup / ranking story end-to-end. To run "
+           "Part 2, ensure the msk_kafka connection + service credential (MSK cluster) work and set "
+           "the widget allow_streaming_online=true, then re-run.")
+    print(msg); dbutils.notebook.exit(msg)
+
 import os
 import re
 from databricks.sdk import WorkspaceClient

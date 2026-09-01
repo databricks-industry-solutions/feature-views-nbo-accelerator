@@ -33,6 +33,19 @@ conn_name = dbutils.widgets.get("kafka_connection")
 service_credential = dbutils.widgets.get("service_credential")
 topic = dbutils.widgets.get("topic")
 
+# --- Preflight gate (same switch as notebook 08) ---
+# This benchmark queries the realtime endpoint and measures streaming freshness over MSK, both of
+# which depend on Part 2's streaming path (notebooks 07/08/09). Part 2 is gated OFF by default, so
+# gate here to skip cleanly instead of failing on a missing endpoint / feature. Opt in with
+# allow_streaming_online=true once the MSK infra is configured.
+dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
+if dbutils.widgets.get("allow_streaming_online") != "true":
+    msg = ("Streaming latency & freshness benchmark skipped: Part 2 streaming is gated "
+           "(allow_streaming_online=false). Part 1's latency benchmark (notebook 06) covers the "
+           "feature-read + rank story. Set allow_streaming_online=true (with working MSK infra) to "
+           "run Part 2, then re-run.")
+    print(msg); dbutils.notebook.exit(msg)
+
 import time
 import json
 import statistics
