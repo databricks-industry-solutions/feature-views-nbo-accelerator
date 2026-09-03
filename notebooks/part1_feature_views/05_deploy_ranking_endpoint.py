@@ -25,6 +25,7 @@
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
+dbutils.widgets.text("ranker_endpoint", "nbo-ranker-online")  # override in a shared workspace
 catalog = dbutils.widgets.get("catalog").strip()
 schema = dbutils.widgets.get("schema").strip()
 if not schema:
@@ -147,7 +148,7 @@ from databricks.sdk.service.serving import (
     EndpointCoreConfigInput, ServedEntityInput, TrafficConfig, Route,
 )
 w = WorkspaceClient()
-ENDPOINT, SERVED = "nbo-ranker-online", "nbo-online-ro"
+ENDPOINT, SERVED = dbutils.widgets.get("ranker_endpoint"), "nbo-online-ro"
 # scale_to_zero_enabled=True so the endpoint costs nothing while idle — the right default for an
 # accelerator someone clones and forgets about. Trade-off: after ~30 min idle the endpoint scales to
 # zero and the next request pays a cold start (tens of seconds), so the latency numbers in notebook

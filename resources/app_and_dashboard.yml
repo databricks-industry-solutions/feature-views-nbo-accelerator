@@ -2,7 +2,7 @@
 resources:
   apps:
     nbo_recommender:
-      name: nbo-recommender
+      name: ${var.app_name}
       description: "Real-time Next-Best-Offer demo with a live sub-300ms latency meter."
       source_code_path: ../apps/recommender-app
       resources:
@@ -12,9 +12,9 @@ resources:
             id: ${var.warehouse_id}
             permission: CAN_USE
         - name: serving-endpoint
-          description: "nbo-ranker-online ranking model endpoint (Part 1 online-lookup ranker)."
+          description: "Part 1 online-lookup ranking model endpoint."
           serving_endpoint:
-            name: nbo-ranker-online
+            name: ${var.ranker_online_endpoint}
             permission: CAN_QUERY
 
   dashboards:

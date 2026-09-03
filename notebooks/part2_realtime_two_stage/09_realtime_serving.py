@@ -22,6 +22,7 @@
 # COMMAND ----------
 dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
+dbutils.widgets.text("ranker_endpoint", "nbo-ranker-realtime")  # override in a shared workspace
 catalog = dbutils.widgets.get("catalog").strip()
 schema = dbutils.widgets.get("schema").strip()
 if not schema:
@@ -169,7 +170,7 @@ from databricks.sdk.service.serving import (
     EndpointCoreConfigInput, ServedEntityInput, TrafficConfig, Route,
 )
 w = WorkspaceClient()
-ENDPOINT, SERVED = "nbo-ranker-realtime", "nbo-realtime-ro"
+ENDPOINT, SERVED = dbutils.widgets.get("ranker_endpoint"), "nbo-realtime-ro"
 # scale_to_zero_enabled=True so the endpoint costs nothing while idle (see notebook 05 for the same
 # choice). Trade-off: after idle it scales to zero and the next request pays a cold start, so warm
 # the endpoint before measuring latency (notebook 10) or demoing.

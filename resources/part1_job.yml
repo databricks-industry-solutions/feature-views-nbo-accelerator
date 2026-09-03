@@ -53,6 +53,7 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
+              ranker_endpoint: ${var.ranker_online_endpoint}
 
         - task_key: latency_benchmark
           depends_on: [{ task_key: deploy_ranking_endpoint }]
@@ -61,4 +62,4 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              ranker_endpoint: nbo-ranker-online
+              ranker_endpoint: ${var.ranker_online_endpoint}
