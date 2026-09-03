@@ -15,7 +15,11 @@
       "name": "latency",
       "displayName": "Serving latency by stage",
       "queryLines": [
-        "SELECT stage, ",
+        "SELECT ",
+        "  CASE stage ",
+        "    WHEN 'feature_read_and_rank' THEN 'Online inference (feature lookup + rank)' ",
+        "    WHEN 'freshness_event_to_online' THEN 'Streaming freshness (event to online)' ",
+        "    ELSE stage END AS stage, ",
         "  CAST(p50 AS DOUBLE) AS p50, ",
         "  CAST(p95 AS DOUBLE) AS p95, ",
         "  CAST(p99 AS DOUBLE) AS p99 ",
@@ -43,6 +47,29 @@
         "GROUP BY product_category ",
         "ORDER BY n_offers DESC"
       ]
+    },
+    {
+      "name": "rt_kpi",
+      "displayName": "RT freshness & serving KPIs",
+      "queryLines": [
+        "SELECT ",
+        "  (SELECT CAST(p95 AS DOUBLE) FROM fins_industry_solutions.nbo.part2_latency_results WHERE stage='freshness_event_to_online') AS freshness_p95_ms, ",
+        "  (SELECT CAST(p50 AS DOUBLE) FROM fins_industry_solutions.nbo.part2_latency_results WHERE stage='freshness_event_to_online') AS freshness_p50_ms, ",
+        "  (SELECT CAST(p95 AS DOUBLE) FROM fins_industry_solutions.nbo.part2_latency_results WHERE stage='feature_read_and_rank')     AS serving_p95_ms"
+      ]
+    },
+    {
+      "name": "rt",
+      "displayName": "RT latency by stage",
+      "queryLines": [
+        "SELECT ",
+        "  CASE stage ",
+        "    WHEN 'freshness_event_to_online' THEN 'Feature freshness (event to online)' ",
+        "    WHEN 'feature_read_and_rank' THEN 'Feature serving (online read + rank)' ",
+        "    ELSE stage END AS stage, ",
+        "  CAST(p50 AS DOUBLE) AS p50, CAST(p95 AS DOUBLE) AS p95, CAST(p99 AS DOUBLE) AS p99 ",
+        "FROM fins_industry_solutions.nbo.part2_latency_results ORDER BY stage"
+      ]
     }
   ],
   "pages": [
@@ -54,120 +81,612 @@
         {
           "widget": {
             "name": "title",
-            "multilineTextboxSpec": {"lines": ["## Real-Time Next-Best-Offer — Feature Views Accelerator"]}
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Real-Time Next-Best-Offer \u2014 Feature Views Accelerator"
+              ]
+            }
           },
-          "position": {"x": 0, "y": 0, "width": 6, "height": 1}
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
         },
         {
           "widget": {
             "name": "subtitle",
-            "multilineTextboxSpec": {"lines": ["Feature freshness, serving latency vs the 300ms budget, and recommendation quality. Data: `fins_industry_solutions.nbo`."]}
+            "multilineTextboxSpec": {
+              "lines": [
+                "Feature freshness, serving latency vs the 300ms budget, and recommendation quality. Data: `fins_industry_solutions.nbo`."
+              ]
+            }
           },
-          "position": {"x": 0, "y": 1, "width": 6, "height": 1}
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 1
+          }
         },
         {
           "widget": {
             "name": "kpi-customers",
-            "queries": [{"name": "main_query", "query": {"datasetName": "summary", "fields": [{"name": "customers", "expression": "`customers`"}], "disaggregated": true}}],
-            "spec": {"version": 2, "widgetType": "counter", "encodings": {"value": {"fieldName": "customers", "displayName": "Customers"}}, "frame": {"showTitle": true, "title": "Customers"}}
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "summary",
+                  "fields": [
+                    {
+                      "name": "customers",
+                      "expression": "`customers`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "customers",
+                  "displayName": "Customers"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Customers"
+              }
+            }
           },
-          "position": {"x": 0, "y": 2, "width": 2, "height": 3}
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
         },
         {
           "widget": {
             "name": "kpi-transactions",
-            "queries": [{"name": "main_query", "query": {"datasetName": "summary", "fields": [{"name": "transactions", "expression": "`transactions`"}], "disaggregated": true}}],
-            "spec": {"version": 2, "widgetType": "counter", "encodings": {"value": {"fieldName": "transactions", "displayName": "Transactions"}}, "frame": {"showTitle": true, "title": "Transactions (feature source)"}}
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "summary",
+                  "fields": [
+                    {
+                      "name": "transactions",
+                      "expression": "`transactions`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "transactions",
+                  "displayName": "Transactions"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Transactions (feature source)"
+              }
+            }
           },
-          "position": {"x": 2, "y": 2, "width": 2, "height": 3}
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
         },
         {
           "widget": {
             "name": "kpi-latency",
-            "queries": [{"name": "main_query", "query": {"datasetName": "summary", "fields": [{"name": "e2e_p95_ms", "expression": "`e2e_p95_ms`"}], "disaggregated": true}}],
-            "spec": {"version": 2, "widgetType": "counter", "encodings": {"value": {"fieldName": "e2e_p95_ms", "displayName": "E2E p95 (ms)"}}, "frame": {"showTitle": true, "title": "E2E serving p95 (ms) · budget 300"}}
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "summary",
+                  "fields": [
+                    {
+                      "name": "e2e_p95_ms",
+                      "expression": "`e2e_p95_ms`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "e2e_p95_ms",
+                  "displayName": "E2E p95 (ms)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "E2E serving p95 (ms) \u00b7 budget 300"
+              }
+            }
           },
-          "position": {"x": 4, "y": 2, "width": 2, "height": 3}
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
         },
         {
           "widget": {
             "name": "section-latency",
-            "multilineTextboxSpec": {"lines": ["### Serving latency — proving the sub-300ms path"]}
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Serving latency \u2014 proving the sub-300ms path"
+              ]
+            }
           },
-          "position": {"x": 0, "y": 5, "width": 6, "height": 1}
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 6,
+            "height": 1
+          }
         },
         {
           "widget": {
             "name": "latency-bar",
-            "queries": [{"name": "main_query", "query": {"datasetName": "latency", "fields": [
-              {"name": "stage", "expression": "`stage`"},
-              {"name": "p50", "expression": "`p50`"},
-              {"name": "p95", "expression": "`p95`"},
-              {"name": "p99", "expression": "`p99`"}
-            ], "disaggregated": true}}],
-            "spec": {"version": 3, "widgetType": "bar", "encodings": {
-              "x": {"fieldName": "stage", "scale": {"type": "categorical"}, "displayName": "Stage"},
-              "y": {"scale": {"type": "quantitative"}, "fields": [
-                {"fieldName": "p50", "displayName": "p50 (ms)"},
-                {"fieldName": "p95", "displayName": "p95 (ms)"},
-                {"fieldName": "p99", "displayName": "p99 (ms)"}
-              ]}
-            }, "mark": {"layout": "group"}, "frame": {"showTitle": true, "title": "Latency percentiles by stage (ms)"}}
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "latency",
+                  "fields": [
+                    {
+                      "name": "stage",
+                      "expression": "`stage`"
+                    },
+                    {
+                      "name": "p50",
+                      "expression": "`p50`"
+                    },
+                    {
+                      "name": "p95",
+                      "expression": "`p95`"
+                    },
+                    {
+                      "name": "p99",
+                      "expression": "`p99`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "stage",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Stage"
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "p50",
+                      "displayName": "p50 (ms)"
+                    },
+                    {
+                      "fieldName": "p95",
+                      "displayName": "p95 (ms)"
+                    },
+                    {
+                      "fieldName": "p99",
+                      "displayName": "p99 (ms)"
+                    }
+                  ]
+                }
+              },
+              "mark": {
+                "layout": "group"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Latency percentiles by stage (ms)"
+              }
+            }
           },
-          "position": {"x": 0, "y": 6, "width": 3, "height": 6}
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 3,
+            "height": 6
+          }
         },
         {
           "widget": {
             "name": "tier-bar",
-            "queries": [{"name": "main_query", "query": {"datasetName": "tier", "fields": [
-              {"name": "loyalty_tier", "expression": "`loyalty_tier`"},
-              {"name": "accept_rate", "expression": "`accept_rate`"}
-            ], "disaggregated": true}}],
-            "spec": {"version": 3, "widgetType": "bar", "encodings": {
-              "x": {"fieldName": "loyalty_tier", "scale": {"type": "categorical"}, "displayName": "Loyalty tier"},
-              "y": {"fieldName": "accept_rate", "scale": {"type": "quantitative"}, "displayName": "Offer accept rate"}
-            }, "frame": {"showTitle": true, "title": "Offer acceptance by loyalty tier (model signal)"}}
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "tier",
+                  "fields": [
+                    {
+                      "name": "loyalty_tier",
+                      "expression": "`loyalty_tier`"
+                    },
+                    {
+                      "name": "accept_rate",
+                      "expression": "`accept_rate`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "loyalty_tier",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Loyalty tier"
+                },
+                "y": {
+                  "fieldName": "accept_rate",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Offer accept rate"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Offer acceptance by loyalty tier (model signal)"
+              }
+            }
           },
-          "position": {"x": 3, "y": 6, "width": 3, "height": 6}
+          "position": {
+            "x": 3,
+            "y": 6,
+            "width": 3,
+            "height": 6
+          }
         },
         {
           "widget": {
             "name": "section-detail",
-            "multilineTextboxSpec": {"lines": ["### Recommendation catalog & latency detail"]}
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Recommendation catalog & latency detail"
+              ]
+            }
           },
-          "position": {"x": 0, "y": 12, "width": 6, "height": 1}
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 6,
+            "height": 1
+          }
         },
         {
           "widget": {
             "name": "category-pie",
-            "queries": [{"name": "main_query", "query": {"datasetName": "category", "fields": [
-              {"name": "product_category", "expression": "`product_category`"},
-              {"name": "n_offers", "expression": "`n_offers`"}
-            ], "disaggregated": true}}],
-            "spec": {"version": 3, "widgetType": "pie", "encodings": {
-              "angle": {"fieldName": "n_offers", "scale": {"type": "quantitative"}, "displayName": "Offers"},
-              "color": {"fieldName": "product_category", "scale": {"type": "categorical"}, "displayName": "Category"}
-            }, "frame": {"showTitle": true, "title": "Offer catalog by category"}}
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "category",
+                  "fields": [
+                    {
+                      "name": "product_category",
+                      "expression": "`product_category`"
+                    },
+                    {
+                      "name": "n_offers",
+                      "expression": "`n_offers`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "n_offers",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Offers"
+                },
+                "color": {
+                  "fieldName": "product_category",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Category"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Offer catalog by category"
+              }
+            }
           },
-          "position": {"x": 0, "y": 13, "width": 3, "height": 6}
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 3,
+            "height": 6
+          }
         },
         {
           "widget": {
             "name": "latency-table",
-            "queries": [{"name": "main_query", "query": {"datasetName": "latency", "fields": [
-              {"name": "stage", "expression": "`stage`"},
-              {"name": "p50", "expression": "`p50`"},
-              {"name": "p95", "expression": "`p95`"},
-              {"name": "p99", "expression": "`p99`"}
-            ], "disaggregated": true}}],
-            "spec": {"version": 2, "widgetType": "table", "encodings": {"columns": [
-              {"fieldName": "stage", "displayName": "Stage"},
-              {"fieldName": "p50", "displayName": "p50 (ms)"},
-              {"fieldName": "p95", "displayName": "p95 (ms)"},
-              {"fieldName": "p99", "displayName": "p99 (ms)"}
-            ]}, "frame": {"showTitle": true, "title": "Serving latency percentiles (ms)"}}
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "latency",
+                  "fields": [
+                    {
+                      "name": "stage",
+                      "expression": "`stage`"
+                    },
+                    {
+                      "name": "p50",
+                      "expression": "`p50`"
+                    },
+                    {
+                      "name": "p95",
+                      "expression": "`p95`"
+                    },
+                    {
+                      "name": "p99",
+                      "expression": "`p99`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "stage",
+                    "displayName": "Stage"
+                  },
+                  {
+                    "fieldName": "p50",
+                    "displayName": "p50 (ms)"
+                  },
+                  {
+                    "fieldName": "p95",
+                    "displayName": "p95 (ms)"
+                  },
+                  {
+                    "fieldName": "p99",
+                    "displayName": "p99 (ms)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Serving latency percentiles (ms)"
+              }
+            }
           },
-          "position": {"x": 3, "y": 13, "width": 3, "height": 6}
+          "position": {
+            "x": 3,
+            "y": 13,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "section-rt",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Real-time streaming \u2014 feature freshness & serving latency",
+                "",
+                "From Part 2 (`part2_latency_results`): how fast an in-session event reaches the online store, and the online feature-serving latency."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 19,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-freshness",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "rt_kpi",
+                  "fields": [
+                    {
+                      "name": "freshness_p95_ms",
+                      "expression": "`freshness_p95_ms`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "freshness_p95_ms",
+                  "displayName": "Freshness p95 (ms)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Feature freshness p95 \u00b7 event \u2192 online (ms)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 20,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi-serving",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "rt_kpi",
+                  "fields": [
+                    {
+                      "name": "serving_p95_ms",
+                      "expression": "`serving_p95_ms`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "serving_p95_ms",
+                  "displayName": "Serving p95 (ms)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Feature serving p95 \u00b7 online read + rank (ms)"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 20,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "rt-bar",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "rt",
+                  "fields": [
+                    {
+                      "name": "stage",
+                      "expression": "`stage`"
+                    },
+                    {
+                      "name": "p50",
+                      "expression": "`p50`"
+                    },
+                    {
+                      "name": "p95",
+                      "expression": "`p95`"
+                    },
+                    {
+                      "name": "p99",
+                      "expression": "`p99`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "stage",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Stage"
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "p50",
+                      "displayName": "p50 (ms)"
+                    },
+                    {
+                      "fieldName": "p95",
+                      "displayName": "p95 (ms)"
+                    },
+                    {
+                      "fieldName": "p99",
+                      "displayName": "p99 (ms)"
+                    }
+                  ]
+                }
+              },
+              "mark": {
+                "layout": "group"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Real-time latency percentiles by stage (ms)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 23,
+            "width": 6,
+            "height": 6
+          }
         }
       ]
     }

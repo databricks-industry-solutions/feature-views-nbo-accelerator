@@ -29,6 +29,13 @@ variables:
     default: nbo
   warehouse_id:
     description: SQL warehouse id for the app and dashboard (required — pass with --var warehouse_id=<id>)
+  dashboard_warehouse_id:
+    description: >-
+      Warehouse backing the AI/BI dashboard. Defaults to warehouse_id. When the workspace has a
+      Lakehouse Realtime (REYDEN) warehouse enabled (gated beta), deploy.local.sh auto-detects it
+      and passes it here so the dashboard runs on the low-latency RT engine; otherwise it falls
+      back to warehouse_id. The dashboard is read-only (SELECT-only), which RT requires.
+    default: ${var.warehouse_id}
   kafka_connection:
     description: Existing Unity Catalog Kafka connection name (holds bootstrap servers)
     default: msk_kafka

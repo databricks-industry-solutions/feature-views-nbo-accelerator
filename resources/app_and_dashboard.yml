@@ -21,4 +21,4 @@ resources:
     nbo_dashboard:
       display_name: "NBO Feature Views Accelerator"
       file_path: ../dashboards/nbo_dashboard.json
-      warehouse_id: ${var.warehouse_id}
+      warehouse_id: ${var.dashboard_warehouse_id}
