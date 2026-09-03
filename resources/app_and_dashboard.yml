@@ -22,3 +22,11 @@ resources:
       display_name: "NBO Feature Views Accelerator"
       file_path: ../dashboards/nbo_dashboard.json
       warehouse_id: ${var.dashboard_warehouse_id}
+      # The dashboard JSON uses BARE table names (no catalog/schema); these fields supply the
+      # default catalog + schema for every dataset. This is how the dashboard is parametrized
+      # per deploy — a Lakeview dataset query cannot take a bundle var inline, but the resource's
+      # dataset_catalog/dataset_schema can. NOTE: schema must be an explicit value here — if the
+      # `schema` var is left blank (notebooks then auto-derive nbo_<user>), pin --var schema=<name>
+      # so the dashboard and the notebooks target the same schema.
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${var.schema}

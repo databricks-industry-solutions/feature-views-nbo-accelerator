@@ -5,10 +5,10 @@
       "displayName": "Summary KPIs",
       "queryLines": [
         "SELECT ",
-        "  (SELECT COUNT(*) FROM fins_industry_solutions.nbo.customers) AS customers, ",
-        "  (SELECT COUNT(*) FROM fins_industry_solutions.nbo.transactions) AS transactions, ",
-        "  (SELECT ROUND(AVG(accepted),4) FROM fins_industry_solutions.nbo.labels) AS accept_rate, ",
-        "  (SELECT CAST(p95 AS DOUBLE) FROM fins_industry_solutions.nbo.part1_latency_results WHERE stage='feature_read_and_rank') AS e2e_p95_ms"
+        "  (SELECT COUNT(*) FROM customers) AS customers, ",
+        "  (SELECT COUNT(*) FROM transactions) AS transactions, ",
+        "  (SELECT ROUND(AVG(accepted),4) FROM labels) AS accept_rate, ",
+        "  (SELECT CAST(p95 AS DOUBLE) FROM part1_latency_results WHERE stage='feature_read_and_rank') AS e2e_p95_ms"
       ]
     },
     {
@@ -23,7 +23,7 @@
         "  CAST(p50 AS DOUBLE) AS p50, ",
         "  CAST(p95 AS DOUBLE) AS p95, ",
         "  CAST(p99 AS DOUBLE) AS p99 ",
-        "FROM fins_industry_solutions.nbo.part1_latency_results ",
+        "FROM part1_latency_results ",
         "ORDER BY stage"
       ]
     },
@@ -33,8 +33,8 @@
       "queryLines": [
         "SELECT c.loyalty_tier AS loyalty_tier, ",
         "  ROUND(AVG(l.accepted),4) AS accept_rate ",
-        "FROM fins_industry_solutions.nbo.labels l ",
-        "JOIN fins_industry_solutions.nbo.customers c ON l.customer_id = c.customer_id ",
+        "FROM labels l ",
+        "JOIN customers c ON l.customer_id = c.customer_id ",
         "GROUP BY c.loyalty_tier"
       ]
     },
@@ -43,7 +43,7 @@
       "displayName": "Offers by product category",
       "queryLines": [
         "SELECT product_category, COUNT(*) AS n_offers ",
-        "FROM fins_industry_solutions.nbo.offers ",
+        "FROM offers ",
         "GROUP BY product_category ",
         "ORDER BY n_offers DESC"
       ]
@@ -53,9 +53,9 @@
       "displayName": "RT freshness & serving KPIs",
       "queryLines": [
         "SELECT ",
-        "  (SELECT CAST(p95 AS DOUBLE) FROM fins_industry_solutions.nbo.part2_latency_results WHERE stage='freshness_event_to_online') AS freshness_p95_ms, ",
-        "  (SELECT CAST(p50 AS DOUBLE) FROM fins_industry_solutions.nbo.part2_latency_results WHERE stage='freshness_event_to_online') AS freshness_p50_ms, ",
-        "  (SELECT CAST(p95 AS DOUBLE) FROM fins_industry_solutions.nbo.part2_latency_results WHERE stage='feature_read_and_rank')     AS serving_p95_ms"
+        "  (SELECT CAST(p95 AS DOUBLE) FROM part2_latency_results WHERE stage='freshness_event_to_online') AS freshness_p95_ms, ",
+        "  (SELECT CAST(p50 AS DOUBLE) FROM part2_latency_results WHERE stage='freshness_event_to_online') AS freshness_p50_ms, ",
+        "  (SELECT CAST(p95 AS DOUBLE) FROM part2_latency_results WHERE stage='feature_read_and_rank')     AS serving_p95_ms"
       ]
     },
     {
@@ -68,7 +68,7 @@
         "    WHEN 'feature_read_and_rank' THEN 'Feature serving (online read + rank)' ",
         "    ELSE stage END AS stage, ",
         "  CAST(p50 AS DOUBLE) AS p50, CAST(p95 AS DOUBLE) AS p95, CAST(p99 AS DOUBLE) AS p99 ",
-        "FROM fins_industry_solutions.nbo.part2_latency_results ORDER BY stage"
+        "FROM part2_latency_results ORDER BY stage"
       ]
     }
   ],
@@ -99,7 +99,7 @@
             "name": "subtitle",
             "multilineTextboxSpec": {
               "lines": [
-                "Feature freshness, serving latency vs the 300ms budget, and recommendation quality. Data: `fins_industry_solutions.nbo`."
+                "Feature freshness, serving latency vs the 300ms budget, and recommendation quality. Data: the deployed catalog/schema."
               ]
             }
           },
