@@ -134,45 +134,14 @@ async function getToken(): Promise<string> {
   }
 }
 
-const BLOCKED = /\b(insert|update|delete|merge|create|drop|alter|truncate|grant|revoke|replace)\b/i;
+// Write/DDL keywords. `replace` is intentionally NOT here: it's a common read-only string
+// function (replace(col,…)), and the only dangerous form, CREATE OR REPLACE, is caught by `create`.
+const BLOCKED = /\b(insert|update|delete|merge|create|drop|alter|truncate|grant|revoke)\b/i;
 
-async function runSql(statement: string, token: string): Promise<string> {
-  const q = statement.trim().replace(/;+\s*$/, '');
-  if (!/^\s*(select|with)\b/i.test(q)) return 'ERROR: only read-only SELECT queries are allowed.';
-  if (BLOCKED.test(q)) return 'ERROR: statement contains a write keyword; only SELECT is allowed.';
-  const auth = { Authorization: `Bearer ${token}` };
-  const res = await fetch(`${HOST}/api/2.0/sql/statements/`, {
-    method: 'POST',
-    headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      warehouse_id: WAREHOUSE_ID,
-      statement: q,
-      wait_timeout: '30s',
-      on_wait_timeout: 'CANCEL',
-      format: 'JSON_ARRAY',
-      disposition: 'INLINE',
-    }),
-  });
-  if (!res.ok) return `ERROR running query: ${res.status} ${await res.text()}`;
-  let data = (await res.json()) as SqlResp;
-  let guard = 0;
-  while (data.status?.state && ['PENDING', 'RUNNING'].includes(data.status.state) && guard < 20) {
-    guard += 1;
-    await new Promise((r) => setTimeout(r, 1000));
-    const p = await fetch(`${HOST}/api/2.0/sql/statements/${data.statement_id}`, { headers: auth });
-    data = (await p.json()) as SqlResp;
-  }
-  if (data.status?.state !== 'SUCCEEDED') {
-    return `ERROR: query ${data.status?.state ?? 'FAILED'}: ${JSON.stringify(data.status?.error ?? {})}`;
-  }
-  const cols = (data.manifest?.schema?.columns ?? []).map((c) => c.name);
-  const rows = (data.result?.data_array ?? []).slice(0, 1000);
-  const out = rows.map((row) => Object.fromEntries(cols.map((c, i) => [c, row[i]])));
-  return JSON.stringify({ columns: cols, row_count: out.length, rows: out }).slice(0, 8000);
-}
-
-// Run a SELECT and return parsed rows (typed objects) — for the app's own data endpoints.
-async function queryRows(statement: string, token: string): Promise<Record<string, unknown>[]> {
+// Single source of truth: submit a statement to the SQL warehouse, poll to completion,
+// return columns + parsed row objects. runSql (LLM-facing string) and queryRows (typed rows)
+// both format from this.
+async function executeStatement(statement: string, token: string): Promise<Record<string, unknown>[]> {
   const auth = { Authorization: `Bearer ${token}` };
   const res = await fetch(`${HOST}/api/2.0/sql/statements/`, {
     method: 'POST',
@@ -185,15 +154,36 @@ async function queryRows(statement: string, token: string): Promise<Record<strin
   if (!res.ok) throw new Error(`SQL ${res.status}: ${await res.text()}`);
   let data = (await res.json()) as SqlResp;
   let guard = 0;
-  while (data.status?.state && ['PENDING', 'RUNNING'].includes(data.status.state) && guard < 20) {
+  while (data.status?.state && ['PENDING', 'RUNNING'].includes(data.status.state) && guard < 30) {
     guard += 1;
     await new Promise((r) => setTimeout(r, 500));
     const p = await fetch(`${HOST}/api/2.0/sql/statements/${data.statement_id}`, { headers: auth });
     data = (await p.json()) as SqlResp;
   }
-  if (data.status?.state !== 'SUCCEEDED') throw new Error(`SQL ${data.status?.state}: ${JSON.stringify(data.status?.error ?? {})}`);
+  if (data.status?.state !== 'SUCCEEDED') {
+    throw new Error(`SQL ${data.status?.state ?? 'FAILED'}: ${JSON.stringify(data.status?.error ?? {})}`);
+  }
   const cols = (data.manifest?.schema?.columns ?? []).map((c) => c.name);
-  return (data.result?.data_array ?? []).map((row) => Object.fromEntries(cols.map((c, i) => [c, row[i]])));
+  const rows = (data.result?.data_array ?? []).slice(0, 1000);
+  return rows.map((row) => Object.fromEntries(cols.map((c, i) => [c, row[i]])));
+}
+
+// LLM tool wrapper: guard read-only, run, and return a compact JSON string.
+async function runSql(statement: string, token: string): Promise<string> {
+  const q = statement.trim().replace(/;+\s*$/, '');
+  if (!/^\s*(select|with)\b/i.test(q)) return 'ERROR: only read-only SELECT queries are allowed.';
+  if (BLOCKED.test(q)) return 'ERROR: statement contains a write keyword; only SELECT is allowed.';
+  try {
+    const out = await executeStatement(q, token);
+    return JSON.stringify({ row_count: out.length, rows: out }).slice(0, 8000);
+  } catch (e) {
+    return `ERROR running query: ${String(e)}`;
+  }
+}
+
+// App data endpoints: parsed rows.
+async function queryRows(statement: string, token: string): Promise<Record<string, unknown>[]> {
+  return executeStatement(statement, token);
 }
 
 // Route-optimized endpoints require an OAuth token DOWNSCOPED to the endpoint (query_inference_endpoint).
@@ -204,9 +194,13 @@ async function mintQueryToken(endpointId: string): Promise<string> {
   // Databricks App service principals are not permitted to use the authorization_details
   // downscoping flow that route-optimized endpoints require, so the app's own SP creds don't work
   // here — a regular SP with CAN_QUERY does (the same SP nb06/nb10 use).
-  const id = process.env.QUERY_SP_CLIENT_ID || process.env.DATABRICKS_CLIENT_ID;
-  const secret = process.env.QUERY_SP_CLIENT_SECRET || process.env.DATABRICKS_CLIENT_SECRET;
-  if (!id || !secret) throw new Error('Route-optimized query needs a service principal with CAN_QUERY (set QUERY_SP_CLIENT_ID/SECRET from the nbo secret scope); not available in this environment.');
+  // Only the dedicated query SP works here. Do NOT fall back to the app SP
+  // (DATABRICKS_CLIENT_ID/SECRET): a Databricks App SP is not permitted to use the
+  // authorization_details downscoping flow, so falling back would just produce an opaque
+  // invalid_authorization_details 400 instead of this actionable message.
+  const id = process.env.QUERY_SP_CLIENT_ID;
+  const secret = process.env.QUERY_SP_CLIENT_SECRET;
+  if (!id || !secret) throw new Error('Route-optimized query needs a query service principal with CAN_QUERY on the endpoint. Set QUERY_SP_CLIENT_ID/QUERY_SP_CLIENT_SECRET (injected from the nbo secret scope). The app\'s own SP cannot mint the endpoint-downscoped token.');
   const basic = Buffer.from(`${id}:${secret}`).toString('base64');
   const authz = JSON.stringify([{
     type: 'workspace_permission', object_type: 'serving-endpoints',
