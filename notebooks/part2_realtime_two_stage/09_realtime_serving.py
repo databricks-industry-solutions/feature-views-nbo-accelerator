@@ -124,13 +124,19 @@ for c in NUM:
 y = tdf["accepted"].astype(int)
 Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
+# Serve the acceptance PROBABILITY, not the 0/1 class (see nb05) — otherwise every offer ties at
+# 0/1 and there's no ranking. Overriding predict to return predict_proba[:, 1] emits P(accept).
+class ProbaLGBM(LGBMClassifier):
+    def predict(self, X, **kwargs):
+        return self.predict_proba(X, **kwargs)[:, 1]
+
 # remainder="drop" is serve-safe: the FS wrapper appends customer_id/ts/etc.; drop them.
 model = Pipeline([
     ("pre", ColumnTransformer(
         [("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1), CAT),
          ("num", "passthrough", NUM)], remainder="drop")),
-    ("clf", LGBMClassifier(n_estimators=300, learning_rate=0.05, num_leaves=31,
-                           subsample=0.8, colsample_bytree=0.8, random_state=42)),
+    ("clf", ProbaLGBM(n_estimators=300, learning_rate=0.05, num_leaves=31,
+                      subsample=0.8, colsample_bytree=0.8, random_state=42)),
 ])
 model.fit(Xtr, ytr)
 print("val_auc:", roc_auc_score(yte, model.predict_proba(Xte)[:, 1]))
@@ -157,9 +163,9 @@ with mlflow.start_run(run_name="nbo_ranker_realtime"):
     fe.log_model(model=model, artifact_path="model", flavor=mlflow.sklearn,
                  training_set=ts, registered_model_name=MODEL,
                  pip_requirements=pip_requirements,
-                 skops_trusted_types=["collections.OrderedDict", "lightgbm.basic.Booster",
-                     "lightgbm.sklearn.LGBMClassifier",
-                     "sklearn.compose._column_transformer._RemainderColsList"])
+                 # cloudpickle (not skops) so the notebook-defined ProbaLGBM subclass serializes by
+                 # value and loads at serving without an importable module.
+                 serialization_format="cloudpickle")
 from mlflow.tracking import MlflowClient
 c = MlflowClient(registry_uri="databricks-uc")
 newest = max(c.search_model_versions(f"name='{MODEL}'"), key=lambda v: int(v.version))

@@ -411,5 +411,23 @@ createApp({
         }
       });
     });
+
+    // Warm the route-optimized ranker on boot so the first user recommend isn't a cold start
+    // (the endpoint is scale-to-zero). Fire-and-forget; failures are logged, not fatal.
+    void (async () => {
+      try {
+        const token = await getToken();
+        const ep = await getRankerEndpoint(token);
+        const queryToken = await mintQueryToken(ep.id);
+        await fetch(ep.url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${queryToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataframe_records: [{ customer_id: '__warmup__', offer_id: 'warmup', product_category: 'credit_card', base_reward: 0, tier_requirement: 1 }] }),
+        });
+        console.log('[warmup] ranker endpoint warmed');
+      } catch (e) {
+        console.warn('[warmup] skipped:', String(e).slice(0, 200));
+      }
+    })();
   },
 }).catch(console.error);
