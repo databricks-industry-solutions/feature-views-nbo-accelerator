@@ -23,6 +23,12 @@ variables:
     default: nbo-recommender-ui
   sql_warehouse_id:
     description: SQL Warehouse ID for the assistant's run_sql tool (pass --var sql_warehouse_id=<id>)
+  query_sp_scope:
+    description: >-
+      Secret scope holding the query service principal creds (keys sp_client_id / sp_client_secret).
+      Route-optimized endpoints require a downscoped OAuth token that the app's own SP cannot mint,
+      so the app uses this SP (which must have CAN_QUERY on the ranker endpoint) — same SP nb06/nb10 use.
+    default: nbo
 
 resources:
   apps:
@@ -30,14 +36,28 @@ resources:
       name: ${var.app_name}
       description: 'Real-time Next-Best-Offer recommender + in-app AI assistant'
       source_code_path: ./
-      # OBO: run_sql executes as the signed-in user, so UC access applies per user.
+      # sql: run_sql executes as the signed-in user (UC access per user).
+      # serving.serving-endpoints: query the route-optimized ranker + call the assistant LLM.
       user_api_scopes:
         - sql
+        - serving.serving-endpoints
       resources:
         - name: sql-warehouse
           sql_warehouse:
             id: ${var.sql_warehouse_id}
             permission: CAN_USE
+        # Query SP creds for route-optimized endpoint access (see query_sp_scope). Injected at
+        # runtime from the secret scope; the deploy grants the app SP READ on these secrets.
+        - name: query-sp-client-id
+          secret:
+            scope: ${var.query_sp_scope}
+            key: sp_client_id
+            permission: READ
+        - name: query-sp-client-secret
+          secret:
+            scope: ${var.query_sp_scope}
+            key: sp_client_secret
+            permission: READ
 
 targets:
   # Host comes from the CLI profile (-p <profile>) — nothing workspace-specific is committed.

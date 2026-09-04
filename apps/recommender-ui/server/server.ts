@@ -28,6 +28,9 @@ const PROVIDER_SVC = process.env.MODEL_PROVIDER_SERVICE ?? '';
 const AGENT_MODEL = process.env.AGENT_MODEL ?? 'databricks-claude-sonnet-5';
 const CATALOG = process.env.CATALOG ?? 'fins_industry_solutions';
 const SCHEMA = process.env.SCHEMA ?? 'nbo';
+// Route-optimized online-lookup ranker: request carries customer_id + offer fields; the endpoint
+// fetches the customer's features from the online store by key and returns P(accept) per offer.
+const RANKER_ENDPOINT = process.env.RANKER_ENDPOINT ?? 'nbo-ranker-online';
 const FQ = `\`${CATALOG}\`.${SCHEMA}`;
 
 const SYSTEM = `You are the Next-Best-Offer assistant for a retail bank, embedded in a
@@ -168,6 +171,69 @@ async function runSql(statement: string, token: string): Promise<string> {
   return JSON.stringify({ columns: cols, row_count: out.length, rows: out }).slice(0, 8000);
 }
 
+// Run a SELECT and return parsed rows (typed objects) — for the app's own data endpoints.
+async function queryRows(statement: string, token: string): Promise<Record<string, unknown>[]> {
+  const auth = { Authorization: `Bearer ${token}` };
+  const res = await fetch(`${HOST}/api/2.0/sql/statements/`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      warehouse_id: WAREHOUSE_ID, statement, wait_timeout: '30s',
+      on_wait_timeout: 'CANCEL', format: 'JSON_ARRAY', disposition: 'INLINE',
+    }),
+  });
+  if (!res.ok) throw new Error(`SQL ${res.status}: ${await res.text()}`);
+  let data = (await res.json()) as SqlResp;
+  let guard = 0;
+  while (data.status?.state && ['PENDING', 'RUNNING'].includes(data.status.state) && guard < 20) {
+    guard += 1;
+    await new Promise((r) => setTimeout(r, 500));
+    const p = await fetch(`${HOST}/api/2.0/sql/statements/${data.statement_id}`, { headers: auth });
+    data = (await p.json()) as SqlResp;
+  }
+  if (data.status?.state !== 'SUCCEEDED') throw new Error(`SQL ${data.status?.state}: ${JSON.stringify(data.status?.error ?? {})}`);
+  const cols = (data.manifest?.schema?.columns ?? []).map((c) => c.name);
+  return (data.result?.data_array ?? []).map((row) => Object.fromEntries(cols.map((c, i) => [c, row[i]])));
+}
+
+// Route-optimized endpoints require an OAuth token DOWNSCOPED to the endpoint (query_inference_endpoint).
+// A plain identity token is rejected. Mint one via client_credentials + authorization_details using the
+// app service principal (DATABRICKS_CLIENT_ID/SECRET, injected in the deployed app).
+async function mintQueryToken(endpointId: string): Promise<string> {
+  // Prefer a dedicated query SP (QUERY_SP_CLIENT_ID/SECRET, injected from the `nbo` secret scope).
+  // Databricks App service principals are not permitted to use the authorization_details
+  // downscoping flow that route-optimized endpoints require, so the app's own SP creds don't work
+  // here — a regular SP with CAN_QUERY does (the same SP nb06/nb10 use).
+  const id = process.env.QUERY_SP_CLIENT_ID || process.env.DATABRICKS_CLIENT_ID;
+  const secret = process.env.QUERY_SP_CLIENT_SECRET || process.env.DATABRICKS_CLIENT_SECRET;
+  if (!id || !secret) throw new Error('Route-optimized query needs a service principal with CAN_QUERY (set QUERY_SP_CLIENT_ID/SECRET from the nbo secret scope); not available in this environment.');
+  const basic = Buffer.from(`${id}:${secret}`).toString('base64');
+  const authz = JSON.stringify([{
+    type: 'workspace_permission', object_type: 'serving-endpoints',
+    object_path: `/serving-endpoints/${endpointId}`, actions: ['query_inference_endpoint'],
+  }]);
+  const r = await fetch(`${HOST}/oidc/v1/token`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', scope: 'all-apis', authorization_details: authz }),
+  });
+  if (!r.ok) throw new Error(`downscoped token mint failed: ${r.status} ${(await r.text()).slice(0, 300)}`);
+  return ((await r.json()) as { access_token: string }).access_token;
+}
+
+interface EndpointInfo { url: string; id: string }
+let cachedEp: EndpointInfo | null = null;
+async function getRankerEndpoint(token: string): Promise<EndpointInfo> {
+  if (cachedEp) return cachedEp;
+  const r = await fetch(`${HOST}/api/2.0/serving-endpoints/${RANKER_ENDPOINT}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`get endpoint ${RANKER_ENDPOINT} failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
+  const d = (await r.json()) as { id?: string; data_plane_info?: { query_info?: { endpoint_url?: string } } };
+  const url = d.data_plane_info?.query_info?.endpoint_url;
+  if (!url || !d.id) throw new Error(`endpoint ${RANKER_ENDPOINT} is not route-optimized (no data-plane query URL).`);
+  cachedEp = { url, id: d.id };
+  return cachedEp;
+}
+
 async function callModel(messages: unknown[], system: string): Promise<Response> {
   const token = await getToken();
   const headers: Record<string, string> = {
@@ -198,7 +264,81 @@ createApp({
     appkit.server.extend((app) => {
       // Lightweight config for the UI header (catalog/schema the app is pointed at).
       app.get('/api/config', (_req, res) => {
-        res.json({ catalog: CATALOG, schema: SCHEMA });
+        res.json({ catalog: CATALOG, schema: SCHEMA, ranker_endpoint: RANKER_ENDPOINT });
+      });
+
+      // Sample customers (real data from Unity Catalog via the SQL warehouse).
+      app.get('/api/customers', async (req, res) => {
+        try {
+          const token = req.header('x-forwarded-access-token') ?? (await getToken());
+          const rows = await queryRows(
+            `SELECT customer_id, loyalty_tier, risk_band, annual_income, tenure_months FROM ${FQ}.customers LIMIT 50`,
+            token,
+          );
+          res.json({ customers: rows });
+        } catch (e) {
+          res.status(500).json({ error: String(e) });
+        }
+      });
+
+      // Full offer catalog (the candidate set the ranker scores in one shot).
+      app.get('/api/offers', async (req, res) => {
+        try {
+          const token = req.header('x-forwarded-access-token') ?? (await getToken());
+          const rows = await queryRows(
+            `SELECT offer_id, product_category, offer_text, base_reward, tier_requirement FROM ${FQ}.offers`,
+            token,
+          );
+          res.json({ offers: rows });
+        } catch (e) {
+          res.status(500).json({ error: String(e) });
+        }
+      });
+
+      // Rank-all: score the FULL offer catalog for a customer through the route-optimized
+      // online-lookup endpoint (features fetched online by customer_id). Returns real
+      // P(accept) per offer + the MEASURED serving latency for this request.
+      app.post('/api/recommend', async (req, res) => {
+        const body = (req.body ?? {}) as { customer_id?: string };
+        const customerId = (body.customer_id ?? '').toString();
+        if (!customerId) {
+          res.status(400).json({ error: 'customer_id required' });
+          return;
+        }
+        try {
+          const sqlToken = req.header('x-forwarded-access-token') ?? (await getToken());
+          const offers = await queryRows(
+            `SELECT offer_id, product_category, offer_text, base_reward, tier_requirement FROM ${FQ}.offers`,
+            sqlToken,
+          );
+          const ep = await getRankerEndpoint(sqlToken);
+          const queryToken = await mintQueryToken(ep.id);
+          const records = offers.map((o) => ({
+            customer_id: customerId,
+            offer_id: o.offer_id,
+            product_category: o.product_category,
+            base_reward: Number(o.base_reward),
+            tier_requirement: Number(o.tier_requirement),
+          }));
+          const t0 = Date.now();
+          const r = await fetch(ep.url, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${queryToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dataframe_records: records }),
+          });
+          const latencyMs = Date.now() - t0;
+          if (!r.ok) {
+            res.status(502).json({ error: `ranker query failed: ${r.status} ${(await r.text()).slice(0, 300)}` });
+            return;
+          }
+          const preds = ((await r.json()) as { predictions?: number[] }).predictions ?? [];
+          const scored = offers
+            .map((o, i) => ({ ...o, score: Number(preds[i] ?? 0) }))
+            .sort((a, b) => b.score - a.score);
+          res.json({ offers: scored, latency_ms: latencyMs, endpoint: RANKER_ENDPOINT });
+        } catch (e) {
+          res.status(500).json({ error: String(e) });
+        }
       });
       app.post('/api/chat', async (req, res) => {
         const body = (req.body ?? {}) as ChatBody;

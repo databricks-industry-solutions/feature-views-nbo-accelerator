@@ -1,11 +1,10 @@
-import { useMemo, useState } from 'react';
-import { Search, Zap, Gauge, Trophy, ChevronDown, Building2, ShieldCheck, Target } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Search, Zap, Gauge, Trophy, ChevronDown, Building2, ShieldCheck, Target, AlertTriangle } from 'lucide-react';
 import {
-  DEMO_CUSTOMERS,
-  DEMO_OFFERS,
   CATEGORY_META,
-  mockRank,
   fmtUSD,
+  normalizeCustomer,
+  normalizeRankedOffer,
   type Customer,
   type RankedOffer,
 } from '@/lib/nbo';
@@ -35,13 +34,28 @@ function ScoreBar({ score, accent }: { score: number; accent: string }) {
 }
 
 export function RecommenderView() {
-  const [customer, setCustomer] = useState<Customer>(DEMO_CUSTOMERS[0]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customer, setCustomer] = useState<Customer | null>(null);
   const [query, setQuery] = useState('');
   const [ranked, setRanked] = useState<RankedOffer[] | null>(null);
   const [latency, setLatency] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selected, setSelected] = useState<{ offer: RankedOffer; rank: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load real customers from Unity Catalog on mount.
+  useEffect(() => {
+    fetch('/api/customers')
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) throw new Error(d.error);
+        const cs = (d.customers ?? []).map(normalizeCustomer);
+        setCustomers(cs);
+        if (cs.length) setCustomer(cs[0]);
+      })
+      .catch((e) => setError(`Could not load customers: ${String(e)}`));
+  }, []);
 
   const filtered = useMemo(() => {
     if (!ranked) return null;
@@ -52,17 +66,27 @@ export function RecommenderView() {
     );
   }, [ranked, query]);
 
+  // Rank the full catalog via the real route-optimized endpoint; latency is the measured round trip.
   async function recommend(c: Customer) {
     setBusy(true);
     setRanked(null);
     setLatency(null);
-    const t0 = performance.now();
-    // Simulated feature-read + rank; replaced by the serving-endpoint call when data is wired.
-    await new Promise((r) => setTimeout(r, 240 + Math.random() * 90));
-    const result = mockRank(c, DEMO_OFFERS);
-    setLatency(Math.round(performance.now() - t0));
-    setRanked(result);
-    setBusy(false);
+    setError(null);
+    try {
+      const r = await fetch('/api/recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_id: c.customer_id }),
+      });
+      const d = (await r.json()) as { offers?: unknown[]; latency_ms?: number; error?: string };
+      if (!r.ok || d.error) throw new Error(d.error ?? `HTTP ${r.status}`);
+      setRanked((d.offers ?? []).map(normalizeRankedOffer));
+      setLatency(d.latency_ms ?? null);
+    } catch (e) {
+      setError(`Recommendation failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -90,17 +114,17 @@ export function RecommenderView() {
               <Building2 size={18} />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[14px] font-semibold text-neutral-900">{customer.customer_id}</div>
+              <div className="truncate text-[14px] font-semibold text-neutral-900">{customer?.customer_id ?? (customers.length ? 'Select a customer' : 'Loading customers…')}</div>
               <div className="flex items-center gap-1.5 text-[11px] text-neutral-500">
-                <span className={`rounded px-1.5 py-0.5 font-medium ${TIER_STYLE[customer.loyalty_tier]}`}>{customer.loyalty_tier}</span>
-                <span className={`rounded px-1.5 py-0.5 font-medium ${RISK_STYLE[customer.risk_band]}`}>{customer.risk_band} risk</span>
+                {customer && <span className={`rounded px-1.5 py-0.5 font-medium ${TIER_STYLE[customer.loyalty_tier]}`}>{customer.loyalty_tier}</span>}
+                {customer && <span className={`rounded px-1.5 py-0.5 font-medium ${RISK_STYLE[customer.risk_band]}`}>{customer.risk_band} risk</span>}
               </div>
             </div>
             <ChevronDown size={16} className={`text-neutral-400 transition-transform ${pickerOpen ? 'rotate-180' : ''}`} />
           </button>
           {pickerOpen && (
             <div className="absolute z-20 mt-2 max-h-80 w-full overflow-auto rounded-2xl border border-[var(--nbo-line)] bg-white p-1.5 shadow-xl">
-              {DEMO_CUSTOMERS.map((c) => (
+              {customers.map((c) => (
                 <button
                   key={c.customer_id}
                   onClick={() => {
@@ -133,14 +157,21 @@ export function RecommenderView() {
 
         {/* Recommend */}
         <button
-          onClick={() => recommend(customer)}
-          disabled={busy}
+          onClick={() => customer && recommend(customer)}
+          disabled={busy || !customer}
           className="inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-[14px] font-semibold text-white shadow-sm transition-transform active:scale-[0.98] disabled:opacity-60"
           style={{ background: 'var(--nbo-red)' }}
         >
           <Zap size={16} /> {busy ? 'Scoring…' : 'Recommend'}
         </button>
       </div>
+
+      {error && (
+        <div className="mb-5 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-700">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {/* Latency meter */}
       {latency !== null && (
@@ -156,7 +187,7 @@ export function RecommenderView() {
             {latency < BUDGET_MS ? `✓ under ${BUDGET_MS}ms budget` : `over ${BUDGET_MS}ms — cold slot`}
           </div>
           <div className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-[12px] text-neutral-500 shadow-sm ring-1 ring-[var(--nbo-line)]">
-            {DEMO_OFFERS.length} offers scored
+            {ranked?.length ?? 0} offers scored
           </div>
         </div>
       )}
@@ -222,7 +253,7 @@ export function RecommenderView() {
         </div>
       )}
 
-      {selected && (
+      {selected && customer && (
         <OfferDetail customer={customer} offer={selected.offer} rank={selected.rank} onClose={() => setSelected(null)} />
       )}
     </div>
