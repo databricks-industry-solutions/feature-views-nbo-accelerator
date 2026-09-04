@@ -107,7 +107,7 @@ FROM range(0, {N_TRANSACTIONS}) AS t(id)
 
 # COMMAND ----------
 # MAGIC %md ## Session events — in-session clickstream (RollingWindow streaming features)
-# MAGIC `event_time` is the event-time column; Part 2 notebook 07 replays these into Kafka/MSK.
+# MAGIC `event_time` is the event-time column; Part 2 notebook 08 replays these into Kafka/MSK.
 # COMMAND ----------
 spark.sql(f"""
 CREATE OR REPLACE TABLE session_events AS

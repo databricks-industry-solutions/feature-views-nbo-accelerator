@@ -75,7 +75,7 @@ spark.sql(f"USE `{catalog}`.`{schema}`")
 # MAGIC **One store for everything.** Part 1's batch features and Part 2's streaming feature must
 # MAGIC materialize into this **same** online store — a served model cannot look up features across
 # MAGIC multiple online stores on new Lakebase stores, and splitting them breaks route-optimized
-# MAGIC serving. Notebook 08 preflights this and fails loudly on a mismatch.
+# MAGIC serving. Notebook 07 preflights this and fails loudly on a mismatch.
 # COMMAND ----------
 from databricks.feature_engineering import FeatureEngineeringClient
 

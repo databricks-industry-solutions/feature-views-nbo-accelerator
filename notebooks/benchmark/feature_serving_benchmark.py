@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Part 1 · 06 · Latency Benchmark — Feature Read + Rank
+# MAGIC # Feature Serving Benchmark — Feature Read + Rank (Part 1 online-lookup path)
 # MAGIC The clean Feature Views proof point: **online feature lookup + ranking**, no retrieval.
 # MAGIC The request carries only `{customer_id, offer_id, offer attrs}`; the route-optimized
 # MAGIC `nbo-ranker-online` endpoint fetches the 5 customer features from the online store by
@@ -108,7 +108,13 @@ for i in range(N):
     lat.append((time.perf_counter() - t0) * 1000)
 
 def pct(a, p):
-    return round(sorted(a)[min(len(a) - 1, int(len(a) * p / 100))], 1)
+    if not a:
+        return None
+    xs = sorted(a)
+    # nearest-rank: the ceil(p/100 * n)-th value (1-based) → 0-based index below. int(n*p/100)
+    # was off by one (e.g. p99 over N=100 returned the max, not the 99th value).
+    idx = max(0, (p * len(xs) + 99) // 100 - 1)
+    return round(xs[min(idx, len(xs) - 1)], 1)
 
 print(f"N={N} (each = online feature read + rank over {len(offers)} offers)")
 print(f"feature-read + rank  p50={pct(lat,50)}ms  p95={pct(lat,95)}ms  p99={pct(lat,99)}ms  mean={round(statistics.mean(lat),1)}ms")
@@ -125,7 +131,7 @@ print(f"Wrote {catalog}.{schema}.part1_latency_results")
 
 # Stub the Part 2 results table so the dashboard's real-time freshness/serving section
 # always resolves, even on a Part-1-only deploy (Part 2 is gated off by default). Part 2's
-# notebook 10 overwrites this with measured event->online freshness + serving latency.
+# the feature-freshness benchmark writes the Part 2 event->online freshness + serving latency.
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS `{catalog}`.{schema}.part2_latency_results
     (stage STRING, p50 DOUBLE, p95 DOUBLE, p99 DOUBLE)

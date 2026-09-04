@@ -2,14 +2,14 @@
 # MAGIC %md
 # MAGIC # Part 2 · 09 · Real-Time Serving with Streaming Features
 # MAGIC Extends Part 1's online-lookup ranker with the **streaming in-session feature**
-# MAGIC `cust_clicks_10m` (notebook 08). No Vector Search, no retrieval stage — for the NBO
+# MAGIC `cust_clicks_10m` (notebook 07). No Vector Search, no retrieval stage — for the NBO
 # MAGIC catalog we **rank all offers** and let personalization live entirely in the ranker.
 # MAGIC The request carries only `{customer_id, offer_id + offer attrs}`; the endpoint fetches
 # MAGIC **all customer features — batch + streaming — from the online store by `customer_id`**.
 # MAGIC
 # MAGIC This is the real-time proof point: the freshest in-session signal (`cust_clicks_10m`,
 # MAGIC continuously maintained by the streaming pipeline) feeds the same ranker within the
-# MAGIC sub-300ms serving path. Latency + freshness are benchmarked in notebook 10.
+# MAGIC sub-300ms serving path. Latency + freshness are benchmarked in the feature-freshness benchmark.
 # MAGIC
 # MAGIC **Why no Vector Search:** for a ~40-offer catalog, retrieval adds ~90ms for no benefit —
 # MAGIC you can score every offer directly. Retrieval only earns its place at catalog scale
@@ -30,7 +30,7 @@ if not schema:
     _user = spark.sql("SELECT current_user()").first()[0]
     schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 
-# --- Preflight gate (same switch as notebook 08) ---
+# --- Preflight gate (same switch as notebook 07) ---
 # This notebook re-logs the ranker with the streaming feature `cust_clicks_10m` and deploys the
 # realtime endpoint. Both require Part 2's streaming feature to be materialized (notebooks 07/08),
 # which is gated OFF by default. Gate here so a gated run skips cleanly instead of failing on a
@@ -179,7 +179,7 @@ w = WorkspaceClient()
 ENDPOINT, SERVED = dbutils.widgets.get("ranker_endpoint"), "nbo-realtime-ro"
 # scale_to_zero_enabled=True so the endpoint costs nothing while idle (see notebook 05 for the same
 # choice). Trade-off: after idle it scales to zero and the next request pays a cold start, so warm
-# the endpoint before measuring latency (notebook 10) or demoing.
+# the endpoint before measuring latency (the feature-freshness benchmark) or demoing.
 served = [ServedEntityInput(name=SERVED, entity_name=MODEL, entity_version=newest.version,
                             workload_size="Small", scale_to_zero_enabled=True)]
 if ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
@@ -190,13 +190,13 @@ else:
             traffic_config=TrafficConfig(routes=[Route(served_model_name=SERVED, traffic_percentage=100)])))
 print(f"Route-optimized endpoint '{ENDPOINT}' deploying {MODEL} v{newest.version}")
 
-# Endpoint deploy is async — block until READY so notebook 10's benchmark doesn't hit a cold endpoint.
+# Endpoint deploy is async — block until READY so the feature-freshness benchmark doesn't hit a cold endpoint.
 w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
 print(f"{ENDPOINT} is READY.")
 
 # COMMAND ----------
 # MAGIC %md ## Grant the benchmark service principal CAN_QUERY (route-optimized query path)
-# MAGIC Notebook 10 queries this **route-optimized** endpoint with an OAuth token *downscoped* to
+# MAGIC The feature-freshness benchmark queries this **route-optimized** endpoint with an OAuth token *downscoped* to
 # MAGIC `query_inference_endpoint`, minted from the SP creds in the `nbo` secret scope. Minting that
 # MAGIC token requires the SP to hold `CAN_QUERY` on the endpoint. Since the endpoint is (re)created
 # MAGIC here on every run, we (re)apply the grant now — otherwise 10 fails with
@@ -205,14 +205,24 @@ print(f"{ENDPOINT} is READY.")
 from databricks.sdk.service.serving import (
     ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel,
 )
-sp_client_id = dbutils.secrets.get("nbo", "sp_client_id")
-w.serving_endpoints.update_permissions(  # PATCH: adds the grant, preserves owner/admin ACLs
-    serving_endpoint_id=w.serving_endpoints.get(name=ENDPOINT).id,
-    access_control_list=[ServingEndpointAccessControlRequest(
-        service_principal_name=sp_client_id,
-        permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
-)
-print(f"Granted CAN_QUERY on {ENDPOINT} to benchmark SP {sp_client_id}.")
+# Guard the read so a Part-2 run without the `nbo` benchmark scope still finishes: the endpoint is
+# already deployed above — don't hard-fail here just because the feature-freshness benchmark's SP is absent (mirrors 05).
+try:
+    sp_client_id = dbutils.secrets.get("nbo", "sp_client_id")
+except Exception:
+    sp_client_id = None
+if sp_client_id:
+    w.serving_endpoints.update_permissions(  # PATCH: adds the grant, preserves owner/admin ACLs
+        serving_endpoint_id=w.serving_endpoints.get(name=ENDPOINT).id,
+        access_control_list=[ServingEndpointAccessControlRequest(
+            service_principal_name=sp_client_id,
+            permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
+    )
+    print(f"Granted CAN_QUERY on {ENDPOINT} to benchmark SP {sp_client_id}.")
+else:
+    print("Skipped benchmark-SP grant: `nbo` secret scope / sp_client_id not found. "
+          "The endpoint is deployed and usable; set up the `nbo` scope to run the "
+          "route-optimized latency feature-freshness benchmark.")
 
 # COMMAND ----------
 # MAGIC %md ## Rank-all serving — request carries only customer_id + offer fields
@@ -224,7 +234,7 @@ print(f"Granted CAN_QUERY on {ENDPOINT} to benchmark SP {sp_client_id}.")
 # MAGIC an interactive OAuth (U2M) client or a service-principal `client_credentials` flow; run as a
 # MAGIC serverless **job** it raises `OAuth tokens are not available for runtime authentication`. So this
 # MAGIC demo cell is best-effort: it runs when executed interactively and is skipped (not failed) under
-# MAGIC job runtime auth. See `10_latency_and_freshness` for the benchmarked numbers and
+# MAGIC job runtime auth. See `feature_freshness_benchmark` for the benchmarked numbers and
 # MAGIC https://docs.databricks.com/aws/en/machine-learning/model-serving/query-route-optimization
 # COMMAND ----------
 def _rank_all(customer_id):

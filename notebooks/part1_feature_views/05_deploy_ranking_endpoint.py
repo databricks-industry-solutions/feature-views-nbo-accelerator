@@ -175,14 +175,14 @@ else:
             traffic_config=TrafficConfig(routes=[Route(served_model_name=SERVED, traffic_percentage=100)])))
 
 # Endpoint deploy is async. Block until the config update finishes and the endpoint is READY
-# so the downstream latency benchmark (06) doesn't query a not-ready / cold endpoint.
+# so the downstream latency feature-serving benchmark doesn't query a not-ready / cold endpoint.
 print(f"Waiting for {ENDPOINT} to become READY (build + provision can take ~10-20 min on first deploy)...")
 w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
 print(f"{ENDPOINT} is READY.")
 
 # COMMAND ----------
 # MAGIC %md ## Grant the benchmark service principal CAN_QUERY (route-optimized query path)
-# MAGIC Notebook 06 queries this **route-optimized** endpoint with an OAuth token *downscoped* to
+# MAGIC The feature-serving benchmark queries this **route-optimized** endpoint with an OAuth token *downscoped* to
 # MAGIC `query_inference_endpoint`, minted from the SP creds in the `nbo` secret scope. Minting that
 # MAGIC token requires the SP to hold `CAN_QUERY` on the endpoint. Since the endpoint is (re)created
 # MAGIC here on every run, we (re)apply the grant now — otherwise 06 fails with
@@ -192,7 +192,7 @@ from databricks.sdk.service.serving import (
     ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel,
 )
 # The benchmark SP lives in the `nbo` secret scope, which only the route-optimized latency
-# benchmark (06) needs. Guard the read so a Part-1-only run without that scope still finishes:
+# feature-serving benchmark needs. Guard the read so a Part-1-only run without that scope still finishes:
 # the endpoint is already deployed above — don't hard-fail here just because 06's SP is absent.
 try:
     sp_client_id = dbutils.secrets.get("nbo", "sp_client_id")
@@ -209,7 +209,7 @@ if sp_client_id:
 else:
     print("Skipped benchmark-SP grant: `nbo` secret scope / sp_client_id not found. "
           "The endpoint is deployed and usable; set up the `nbo` scope to run the "
-          "route-optimized latency benchmark (06).")
+          "route-optimized latency feature-serving benchmark.")
 
 # COMMAND ----------
 # MAGIC %md ## Query — request carries only customer_id + offer fields; features fetched online

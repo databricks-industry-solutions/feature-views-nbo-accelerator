@@ -21,7 +21,7 @@ win fast, then scale up to the full real-time recommender:
 | **Adds** | Batch feature views, online lookup, route-optimized ranking | Streaming (MSK) `RollingWindow` feature feeding the ranker |
 | **Approach** | Batch features only (no streaming) | Rank-all: score every offer directly |
 | **Headline** | feature-read + rank **p50 ~33ms / p95 ~41ms** (incl WAN) | streaming feature serves live; **event→online p50 ~104ms / p95 ~135ms** |
-| **Notebooks** | `notebooks/part1_feature_views/` (00–06) | `notebooks/part2_realtime_two_stage/` (07–10) |
+| **Notebooks** | `notebooks/part1_feature_views/` (00–05) | `notebooks/part2_realtime_two_stage/` (07–09) |
 | **Job** | `resources/part1_job.yml` | `resources/part2_job.yml` (assumes Part 1 has run) |
 | **Status** | ✅ runs end-to-end | ✅ runs end-to-end (streaming feature serves live) |
 
@@ -35,7 +35,7 @@ online-lookup pattern, one more feature.
 >   `nbostream`) the `StreamingMode()` sink runs clean and the online table populates. Keep online
 >   store/table names plain — decorated names can make the sink quote its Postgres target and fail.
 > - ✅ **Single online store + single schema (required).** Batch features (nb03) and the streaming
->   feature (nb08) **must** materialize into the **same** online store (`online_store_name=nbo`) and
+>   feature (nb07) **must** materialize into the **same** online store (`online_store_name=nbo`) and
 >   the **same** schema. New Lakebase Autoscaling online stores do **not** support a served model
 >   looking up features across multiple online stores — an endpoint whose batch features live in one
 >   store and streaming feature in another fails to provision the serving role/OAuth token. Keeping
@@ -61,14 +61,14 @@ online-lookup pattern, one more feature.
 > `scale_to_zero_enabled=False` in notebook 05 / 09 for its duration, and remember the endpoint then
 > bills continuously until you delete it.
 >
-> **Querying a route-optimized endpoint** (nb06/nb10): these endpoints accept **only** an OAuth token
+> **Querying a route-optimized endpoint** (the feature-serving & feature-freshness benchmarks): these endpoints accept **only** an OAuth token
 > downscoped to the endpoint, which the notebook runtime identity cannot mint (raises `OAuth tokens are
-> not available for runtime authentication`; PATs unsupported). nb06/nb10 therefore query via a **service
+> not available for runtime authentication`; PATs unsupported). the feature-serving & feature-freshness benchmarks therefore query via a **service
 > principal** (`client_credentials` + `authorization_details`) whose id/secret live in the **`nbo` secret
 > scope**, and they must run on **serverless** (only serverless egress is on the workspace IP access
 > list) — see **Prerequisites** and
 > [Query route-optimized endpoints](https://docs.databricks.com/aws/en/machine-learning/model-serving/query-route-optimization).
-> Notebook 08 still stops early unless you opt in (`allow_streaming_online=true`).
+> Notebook 07 still stops early unless you opt in (`allow_streaming_online=true`).
 
 ---
 
@@ -119,7 +119,8 @@ Delta: customers, transactions, offers, labels
 | 03 | `03_materialize_features` | Offline Delta + online Lakebase |
 | 04 | `04_train_ranker` | Point-in-time `create_training_set` → LightGBM → UC `@prod` |
 | 05 | `05_deploy_ranking_endpoint` | Route-optimized **online-lookup** ranker |
-| 06 | `06_latency_benchmark` | Feature-read + rank latency |
+
+Latency benchmarks live in `notebooks/benchmark/` (see the Benchmarks section below).
 
 ---
 
@@ -155,10 +156,24 @@ Part 1 batch online features (5) ───────────────�
 
 | # | Notebook | Purpose |
 |---|---|---|
-| 07 | `07_kafka_topic_and_producer` | Seed the MSK topic + synthetic in-session event producer |
-| 08 | `08_streaming_feature_views` | `RollingWindow` streaming FV (`cust_clicks_10m`) via `StreamingMode` |
+| 07 | `07_streaming_feature_views` | `RollingWindow` streaming FV (`cust_clicks_10m`) via `StreamingMode` |
+| 08 | `08_kafka_topic_and_producer` | Seed the MSK topic + synthetic in-session event producer |
 | 09 | `09_realtime_serving` | Re-log ranker with the streaming feature → route-optimized rank-all endpoint |
-| 10 | `10_latency_and_freshness` | Live serving latency + event→online freshness benchmark |
+
+*Run order: the streaming FV / ingestion pipeline (07) must exist and be RUNNING before the
+producer (08) emits events, so 07 precedes 08.*
+
+---
+
+## Benchmarks
+
+*Latency benchmarks for both parts, consolidated in `notebooks/benchmark/`.*
+
+| Notebook | Purpose |
+|---|---|
+| `feature_serving_benchmark` | Feature-read + rank latency (Part 1 online-lookup path) |
+| `end_to_end_inference_benchmark` | Decomposed feature lookup vs. model inference vs. total (real Lakebase reads) |
+| `feature_freshness_benchmark` | Event→online freshness + live serving latency (Part 2 streaming path) |
 
 ---
 
@@ -166,8 +181,9 @@ Part 1 batch online features (5) ───────────────�
 
 | Path | Contents |
 |---|---|
-| `notebooks/part1_feature_views/` | Part 1 (00–06): batch feature views → train → online-lookup ranking |
-| `notebooks/part2_realtime_two_stage/` | Part 2 (07–10): streaming FV + real-time rank-all serving + freshness |
+| `notebooks/part1_feature_views/` | Part 1 (00–05): batch feature views → train → online-lookup ranking |
+| `notebooks/part2_realtime_two_stage/` | Part 2 (07–09): streaming FV + real-time rank-all serving |
+| `notebooks/benchmark/` | Latency benchmarks (feature serving, end-to-end inference, feature freshness) |
 | `apps/recommender-app/` | Databricks App: live NBO demo UI + real-time latency meter (Part 2 capstone) |
 | `dashboards/` | AI/BI dashboard: latency percentiles, offer quality, feature freshness |
 | `resources/` | Asset Bundle: `part1_job.yml`, `part2_job.yml`, app + dashboard |
@@ -245,9 +261,9 @@ notebooks.
   serverless to MSK** (PrivateLink or NAT + security-group rules). Either grant topic auto-create or
   pre-create the topic.
 
-**Service principal for route-optimized queries — nb06 / nb10 (admin)**
+**Service principal for route-optimized queries — the feature-serving & feature-freshness benchmarks (admin)**
 - Route-optimized endpoints accept **only** an OAuth token **downscoped to the endpoint**; the notebook
-  runtime identity cannot mint one. nb06/nb10 therefore query via a **service principal**.
+  runtime identity cannot mint one. the feature-serving & feature-freshness benchmarks therefore query via a **service principal**.
 - Create/identify an SP with an **OAuth client id + secret**, grant it **CAN_QUERY** on both endpoints,
   and store its credentials in a secret scope named **`nbo`**:
   ```bash
@@ -256,7 +272,7 @@ notebooks.
   databricks secrets put-secret  nbo sp_client_secret   # SP OAuth secret
   ```
 - The workspace enforces an **IP access list**; only **serverless egress** is allowlisted, so run
-  nb06/nb10 on serverless (a classic cluster gets a **403** on the token request).
+  the feature-serving & feature-freshness benchmarks on serverless (a classic cluster gets a **403** on the token request).
 
 **SQL warehouse + app grants**
 - A **SQL warehouse** for the app + dashboard (`--var warehouse_id=<id>`).

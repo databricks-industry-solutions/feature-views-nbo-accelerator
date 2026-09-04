@@ -27,7 +27,7 @@ variables:
     description: >-
       Secret scope holding the query service principal creds (keys sp_client_id / sp_client_secret).
       Route-optimized endpoints require a downscoped OAuth token that the app's own SP cannot mint,
-      so the app uses this SP (which must have CAN_QUERY on the ranker endpoint) — same SP nb06/nb10 use.
+      so the app uses this SP (which must have CAN_QUERY on the ranker endpoint) — same SP the feature-serving & feature-freshness benchmarks use.
     default: nbo
 
 resources:

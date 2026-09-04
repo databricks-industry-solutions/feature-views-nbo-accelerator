@@ -102,27 +102,40 @@ for f in FEATS:
 
 print("\nWaiting for online tables to finish their first backfill:", sorted(online_tables))
 deadline = time.time() + 30 * 60  # generous cap; first backfill is typically a few minutes
-pending = set(online_tables)
+# Ready = queryable AND has ≥1 row: a synced table is often created (so SELECT succeeds) before its
+# first backfill lands rows, and gating on existence alone would declare "ready" over an empty store
+# and let 05's endpoint look up nulls. Track queryable-vs-not so the deadline distinguishes a table
+# that never came up (hard failure) from one that's queryable but still empty (warn, don't hard-fail
+# — a feature could legitimately backfill zero rows).
+pending = set(online_tables)          # not yet confirmed backfilled (queryable + ≥1 row)
+never_queryable = set(online_tables)  # never returned from a SELECT (missing / not provisioned)
 while pending and time.time() < deadline:
     for t in list(pending):
         try:
-            spark.sql(f"SELECT 1 FROM {t} LIMIT 1").collect()
-            pending.discard(t)
-            print(f"  ready: {t}")
+            n = spark.sql(f"SELECT 1 FROM {t} LIMIT 1").count()
+            never_queryable.discard(t)  # the SELECT returned → table exists and is queryable
+            if n > 0:
+                pending.discard(t)
+                print(f"  ready (backfilled): {t}")
         except Exception:
             pass  # table not created / not queryable yet — keep polling
     if pending:
         time.sleep(20)
 if pending:
-    raise TimeoutError(
-        f"Online tables not queryable after 30 min: {sorted(pending)}. "
-        "Inspect the 'Synced table: ...' pipelines before deploying the endpoint (05).")
+    unqueryable = pending & never_queryable
+    empty = pending - never_queryable
+    if unqueryable:
+        raise TimeoutError(
+            f"Online tables not queryable after 30 min: {sorted(unqueryable)}. "
+            "Inspect the 'Synced table: ...' pipelines before deploying the endpoint (05).")
+    print(f"WARNING: online tables queryable but still empty after 30 min: {sorted(empty)}. "
+          "Proceeding — but 05's endpoint may look up nulls for these until their backfill lands.")
 print("All online tables ready — safe to train (04) and deploy the endpoint (05).")
 
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Streaming features (RollingWindow over MSK) — online-only via `StreamingMode`
-# MAGIC This is a Part 2 concern; see notebook 08 (currently gated — read its preflight cell):
+# MAGIC This is a Part 2 concern; see notebook 07 (currently gated — read its preflight cell):
 # MAGIC ```python
 # MAGIC from databricks.feature_engineering.entities import StreamingMode
 # MAGIC fe.materialize_features(

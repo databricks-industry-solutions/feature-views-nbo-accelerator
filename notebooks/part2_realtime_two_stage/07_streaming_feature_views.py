@@ -4,7 +4,7 @@
 # environment_version = "5"
 # ///
 # MAGIC %md
-# MAGIC # Part 2 · 08 · Streaming Feature View — Freshest In-Session Intent
+# MAGIC # Part 2 · 07 · Streaming Feature View — Freshest In-Session Intent
 # MAGIC Defines a **streaming** Feature View over Kafka/MSK, strictly following the Databricks docs:
 # MAGIC - Streams: <https://docs.databricks.com/aws/en/machine-learning/feature-store/streams>
 # MAGIC - Feature Views (streaming): <https://docs.databricks.com/aws/en/machine-learning/feature-store/feature-views#streaming-features>
@@ -16,7 +16,7 @@
 # MAGIC
 # MAGIC **Prereqs:** `databricks-feature-engineering>=0.16.0`, DBR 17.0 ML+, enterprise workspace
 # MAGIC with Lakebase, and a **standard-storage UC catalog** (`fins_industry_solutions` qualifies).
-# MAGIC The MSK topic exists (notebook 07).
+# MAGIC The MSK topic exists (notebook 08).
 # MAGIC
 # MAGIC **Per the docs:**
 # MAGIC - `create_stream` starts a **managed, continuous ingestion pipeline** that reads the topic
@@ -175,7 +175,7 @@ if batch_stores and batch_stores != {osn}:
     raise ValueError(
         f"Single-store invariant violated: Part 1 batch features are in online store(s) {batch_stores}, "
         f"but this notebook targets '{osn}'. Route-optimized serving (nb09) requires ALL of a model's "
-        f"features in ONE online store. Re-run nb03 and nb08 with the same --var online_store_name, or "
+        f"features in ONE online store. Re-run nb03 and nb07 with the same --var online_store_name, or "
         f"pass online_store_name={list(batch_stores)[0]} here."
     )
 
@@ -199,7 +199,7 @@ else:
 # MAGIC Per docs, `create_stream` starts the ingestion pipeline automatically, but it reads from the
 # MAGIC **latest Kafka offset** — so only events produced *after* it is RUNNING are captured. In a job
 # MAGIC DAG this task therefore must **not** return until the pipeline is RUNNING; otherwise the
-# MAGIC downstream producer (07) would feed events the pipeline can never see. We start it if IDLE and
+# MAGIC downstream producer (08) would feed events the pipeline can never see. We start it if IDLE and
 # MAGIC poll until RUNNING (or fail loudly on FAILED), so the `depends_on` producer only runs once the
 # MAGIC pipeline is live.
 # COMMAND ----------
@@ -221,7 +221,7 @@ start = time.time()
 while True:
     state = str(w.pipelines.get(pipeline_id=pid).state)
     if "RUNNING" in state:
-        print(f"Ingestion pipeline is RUNNING after {int(time.time() - start)}s. Safe to produce (07).")
+        print(f"Ingestion pipeline is RUNNING after {int(time.time() - start)}s. Safe to produce (08).")
         break
     if "FAILED" in state:
         raise RuntimeError(f"Ingestion pipeline {pid} entered {state}; check the pipeline run for a validation error (see Pitfall #5).")
@@ -232,7 +232,7 @@ while True:
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Next → notebook 09 (real-time serving)
-# MAGIC After the ingestion pipeline is RUNNING and notebook 07 has produced events, notebook 09
+# MAGIC After the ingestion pipeline is RUNNING and notebook 08 has produced events, notebook 09
 # MAGIC re-logs the ranker with `cust_clicks_10m` added (online-lookup) and deploys the
 # MAGIC route-optimized `nbo-ranker-realtime` endpoint. `create_training_set` reads the streaming
 # MAGIC feature's ingestion table for point-in-time joins (leaf-node names: `customer_id`, `event_time`).

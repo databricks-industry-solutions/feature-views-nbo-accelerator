@@ -1,7 +1,7 @@
 # Dashboards
 
 AI/BI dashboard for the accelerator. `nbo_dashboard.json` is the serialized Lakeview
-definition; deploy it after notebook `06_latency_benchmark.py` populates
+definition; deploy it after notebook `benchmark/feature_serving_benchmark.py` populates
 `part1_latency_results`.
 
 ## Panels (as built)

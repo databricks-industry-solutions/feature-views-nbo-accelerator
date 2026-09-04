@@ -1,8 +1,8 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Part 2 · 07 · Kafka Topic + Synthetic In-Session Event Producer
+# MAGIC # Part 2 · 08 · Kafka Topic + Synthetic In-Session Event Producer
 # MAGIC Produces synthetic clickstream events into the MSK topic that backs the streaming
-# MAGIC Feature View (notebook 08). Follows the Databricks Feature Views streaming docs:
+# MAGIC Feature View (notebook 07). Follows the Databricks Feature Views streaming docs:
 # MAGIC <https://docs.databricks.com/aws/en/machine-learning/feature-store/streams>
 # MAGIC
 # MAGIC **Auth:** UC Kafka connection **`msk_kafka`** (AWS MSK, IAM,
@@ -17,8 +17,8 @@
 # MAGIC   AWS MSK IAM signer. (This MSK cluster has auto-create disabled, so the topic is pre-created.)
 # MAGIC
 # MAGIC **Doc-critical:** the Stream's ingestion pipeline reads from the **latest Kafka offset**, so
-# MAGIC events must be produced *after* the stream exists (notebook 08), or supplied via a backfill
-# MAGIC source. For the demo we run this producer in `continuous` mode after notebook 08 is live.
+# MAGIC events must be produced *after* the stream exists (notebook 07), or supplied via a backfill
+# MAGIC source. For the demo we run this producer in `continuous` mode after notebook 07 is live.
 # MAGIC `event_time` is emitted as an **ISO-8601 timestamp string** (the streaming FV timeseries
 # MAGIC column must be TIMESTAMP; the JSON Schema declares `format: date-time`).
 
@@ -34,7 +34,7 @@ dbutils.widgets.text("service_credential", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
 dbutils.widgets.text("mode", "bounded", "bounded | continuous")
 dbutils.widgets.text("num_events", "200000")
-dbutils.widgets.text("events_per_sec", "25")  # continuous: rows/sec. LOW (~20-25) for a clean nb10 §2b freshness read; raise for a load test.
+dbutils.widgets.text("events_per_sec", "25")  # continuous: rows/sec. LOW (~20-25) for a clean feature-freshness-benchmark §2b freshness read; raise for a load test.
 dbutils.widgets.text("duration_sec", "300")  # continuous mode: how long to keep bursting
 
 catalog = dbutils.widgets.get("catalog").strip()
@@ -50,7 +50,7 @@ mode = dbutils.widgets.get("mode")
 num_events = int(dbutils.widgets.get("num_events"))
 events_per_sec = int(dbutils.widgets.get("events_per_sec"))
 
-# --- Preflight gate (same switch as notebook 08) ---
+# --- Preflight gate (same switch as notebook 07) ---
 # This producer writes to MSK, which needs a working `msk_kafka` UC connection + service credential
 # (AWS IAM). Part 2's streaming path is gated OFF by default so the e2e runs green on Part 1 (the
 # fully-working path). Gating here — before any MSK access — makes a gated run skip cleanly instead
@@ -112,7 +112,7 @@ else:
         print(f"Created topic '{t}'.")
 
 # COMMAND ----------
-# MAGIC %md ## 2 · Synthetic event schema (matches the Stream's JSON Schema in notebook 08)
+# MAGIC %md ## 2 · Synthetic event schema (matches the Stream's JSON Schema in notebook 07)
 # COMMAND ----------
 N_CUSTOMERS = 100_000
 EVENT_TYPES = ["page_view", "product_view", "calculator_use", "add_to_cart", "search"]
@@ -135,7 +135,7 @@ def to_events(df, id_col):
 KAFKA_OPTS = {"kafka.bootstrap.servers": BOOTSTRAP, "databricks.serviceCredential": service_credential}
 
 # COMMAND ----------
-# MAGIC %md ## 3a · Bounded produce (run AFTER notebook 08 so the ingestion pipeline captures it)
+# MAGIC %md ## 3a · Bounded produce (run AFTER notebook 07 so the ingestion pipeline captures it)
 # COMMAND ----------
 if mode == "bounded":
     events = to_events(spark.range(0, num_events).withColumnRenamed("id", "seq"), "seq")
@@ -164,6 +164,6 @@ if mode == "continuous":
         events = to_events(spark.range(seq0, seq0 + events_per_burst).withColumnRenamed("id", "seq"), "seq")
         events.write.format("kafka").options(**KAFKA_OPTS).option("topic", topic).save()
         bursts += 1
-        # Throttle to ~events_per_sec (one burst/sec). Keep the rate LOW (~20-25/s) for a clean nb10 §2b read.
+        # Throttle to ~events_per_sec (one burst/sec). Keep the rate LOW (~20-25/s) for a clean feature-freshness-benchmark §2b read.
         _t.sleep(max(0.0, 1.0 - (_t.time() - t_burst)))
     print(f"Produced {bursts} bursts × ~{events_per_burst} events over ~{duration_sec}s to '{topic}'.")

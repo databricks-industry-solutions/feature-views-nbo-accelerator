@@ -7,13 +7,13 @@ resources:
     nbo_part2_realtime_streaming:
       name: "[NBO] Part 2 · Real-Time Streaming Recommender"
       tasks:
-        # ORDER MATTERS: the managed ingestion pipeline created by create_stream (08) reads from
+        # ORDER MATTERS: the managed ingestion pipeline created by create_stream (07) reads from
         # the LATEST Kafka offset, so the stream must exist and be RUNNING *before* any events are
-        # produced. 08 therefore runs FIRST and blocks until its ingestion pipeline is RUNNING;
-        # only then does the producer (07) feed events that the pipeline will actually capture.
+        # produced. 07 therefore runs FIRST and blocks until its ingestion pipeline is RUNNING;
+        # only then does the producer (08) feed events that the pipeline will actually capture.
         - task_key: streaming_feature_views
           notebook_task:
-            notebook_path: ../notebooks/part2_realtime_two_stage/08_streaming_feature_views.py
+            notebook_path: ../notebooks/part2_realtime_two_stage/07_streaming_feature_views.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
@@ -24,14 +24,14 @@ resources:
 
         - task_key: kafka_producer
           depends_on: [{ task_key: streaming_feature_views }]
-          # bounded burst, produced AFTER 08 has confirmed the ingestion pipeline is RUNNING.
+          # bounded burst, produced AFTER 07 has confirmed the ingestion pipeline is RUNNING.
           # A bounded burst into a live pipeline is captured and materialized to the online store
           # (this is the proven recipe from the working reference notebook). Do NOT use continuous
           # here: a continuous producer never terminates, so realtime_serving would never run, and
-          # because 07's awaitTermination() is commented out the task would instead exit and kill the
+          # because 08's awaitTermination() is commented out the task would instead exit and kill the
           # stream. Use mode=continuous only for the live-demo notebook path, not this job DAG.
           notebook_task:
-            notebook_path: ../notebooks/part2_realtime_two_stage/07_kafka_topic_and_producer.py
+            notebook_path: ../notebooks/part2_realtime_two_stage/08_kafka_topic_and_producer.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
@@ -54,7 +54,7 @@ resources:
         - task_key: latency_and_freshness
           depends_on: [{ task_key: realtime_serving }]
           notebook_task:
-            notebook_path: ../notebooks/part2_realtime_two_stage/10_latency_and_freshness.py
+            notebook_path: ../notebooks/benchmark/feature_freshness_benchmark.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}

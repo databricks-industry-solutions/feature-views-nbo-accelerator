@@ -25,8 +25,9 @@ resources:
       # The dashboard JSON uses BARE table names (no catalog/schema); these fields supply the
       # default catalog + schema for every dataset. This is how the dashboard is parametrized
       # per deploy — a Lakeview dataset query cannot take a bundle var inline, but the resource's
-      # dataset_catalog/dataset_schema can. NOTE: schema must be an explicit value here — if the
-      # `schema` var is left blank (notebooks then auto-derive nbo_<user>), pin --var schema=<name>
-      # so the dashboard and the notebooks target the same schema.
+      # dataset_catalog/dataset_schema can. The `schema` var defaults to the per-user, deploy-time
+      # nbo_${workspace.current_user.short_name} — the SAME schema the notebooks target — so this
+      # resolves to a real per-user schema (not empty) on a plain deploy. --var schema=<name> pins
+      # a shared schema for both the dashboard and the notebooks together.
       dataset_catalog: ${var.catalog}
       dataset_schema: ${var.schema}

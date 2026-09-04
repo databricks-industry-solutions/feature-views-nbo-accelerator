@@ -19,11 +19,14 @@ variables:
     default: fins_industry_solutions
   schema:
     description: >-
-      Schema for all accelerator assets. Leave BLANK to auto-derive a per-user schema
-      nbo_<username> in every notebook (recommended for a shared catalog). Pin one shared
-      schema across a job DAG with --var schema=<name>. Note: a job running as a service
-      principal derives nbo_<sp-name> when blank.
-    default: ""
+      Schema for all accelerator assets. Defaults to a PER-USER schema derived at deploy time from
+      the deploying identity: nbo_${workspace.current_user.short_name} (e.g. nbo_tian_tan) — the same
+      value each notebook auto-derives from current_user(), so notebooks, the AI/BI dashboard
+      (dataset_schema), and the jobs all resolve to one consistent per-user schema on a plain
+      `bundle deploy`, with no cross-user collision on a shared catalog. Pin one shared schema with
+      --var schema=<name>. (Notebooks still auto-derive nbo_<username> when the widget is blank, for
+      standalone runs outside the bundle.)
+    default: nbo_${workspace.current_user.short_name}
   online_store_name:
     description: Lakebase online store name (DNS-compliant — lowercase, no underscores). Keep it a simple single word so the streaming FS sink emits an unquoted Postgres target. Batch and streaming features must share this one store (multi-store lookup is unsupported and breaks route-optimized serving).
     default: nbo

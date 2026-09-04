@@ -6,7 +6,7 @@ the route-optimized `nbo-ranker-online` endpoint fetches the 5 customer features
 from the online store by `customer_id` at request time (the "author once, serve
 online" proof point) and returns an acceptance probability per offer. There is no
 retrieval stage — for a catalog this size you score everything directly, which
-mirrors notebook 06 exactly.
+mirrors the feature-serving benchmark exactly.
 
 Timing is captured for the single feature-read+rank path so the UI can render a
 live latency meter and make the sub-300ms serving claim tangible. Auth uses the
@@ -102,7 +102,7 @@ class Backend:
     def recommend(self, customer: dict, offers: list[dict], k: int = 10) -> Recommendation:
         """Score the entire offer catalog for this customer, return the top-k.
 
-        Mirrors notebook 06: request carries only customer_id + offer fields; the
+        Mirrors the feature-serving benchmark: request carries only customer_id + offer fields; the
         endpoint looks up the customer's features online by key. No retrieval stage.
         """
         timing = Timing()

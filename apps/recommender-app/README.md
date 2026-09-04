@@ -9,10 +9,10 @@ meter**, proving the sub-300ms serving path.
    - The `nbo-ranker-online` Model Serving endpoint fetches the customer's features
      from the online store **by `customer_id`** at request time, then scores every
      offer. No retrieval stage — for a catalog this size you rank everything directly
-     (mirrors notebook `06_latency_benchmark.py`).
+     (mirrors notebook `benchmark/feature_serving_benchmark.py`).
 3. Feature-read+rank latency renders as a live metric, colored against the 300ms budget.
 4. A reference panel reads the benchmarked percentiles from `part1_latency_results`
-   (written by notebook 06).
+   (written by the feature-serving benchmark).
 
 ## Resources (wire via Apps UI → Configure → + Add resource)
 | Key (`valueFrom`) | Resource | Permission |

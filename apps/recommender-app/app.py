@@ -4,7 +4,7 @@ Picks a retail-banking customer, scores the FULL offer catalog through the
 online-lookup ranker (customer features fetched from the online store by key at
 request time), and renders the ranked offers alongside a live feature-read+rank
 latency meter that makes the sub-300ms serving claim tangible. Rank-all: no
-retrieval stage, mirroring notebook 06.
+retrieval stage, mirroring the feature-serving benchmark.
 """
 
 import streamlit as st
@@ -132,7 +132,7 @@ with right:
 
 # --- Benchmark reference ---------------------------------------------------
 st.divider()
-st.subheader("📊 Benchmarked serving latency (notebook 06)")
+st.subheader("📊 Benchmarked serving latency (the feature-serving benchmark)")
 lat = load_latency()
 if lat:
     st.caption("Percentiles from the load test (N=100, warmed). Read live from "
@@ -143,4 +143,4 @@ if lat:
         use_container_width=True, hide_index=True,
     )
 else:
-    st.caption("Run notebook 06 to populate `part1_latency_results`.")
+    st.caption("Run the feature-serving benchmark to populate `part1_latency_results`.")
