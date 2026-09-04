@@ -20,6 +20,7 @@ resources:
               kafka_connection: ${var.kafka_connection}
               topic: ${var.kafka_topic}
               online_store_name: ${var.online_store_name}
+              allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: kafka_producer
           depends_on: [{ task_key: streaming_feature_views }]
@@ -38,6 +39,7 @@ resources:
               service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
               mode: bounded
+              allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: realtime_serving
           depends_on: [{ task_key: kafka_producer }]
@@ -46,6 +48,8 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
+              ranker_endpoint: ${var.ranker_realtime_endpoint}
+              allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: latency_and_freshness
           depends_on: [{ task_key: realtime_serving }]
@@ -54,7 +58,8 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              ranker_endpoint: nbo-ranker-realtime
+              ranker_endpoint: ${var.ranker_realtime_endpoint}
               kafka_connection: ${var.kafka_connection}
               service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
+              allow_streaming_online: ${var.allow_streaming_online}

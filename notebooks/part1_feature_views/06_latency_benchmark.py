@@ -122,3 +122,12 @@ rows = [{"stage": "feature_read_and_rank", "p50": pct(lat, 50), "p95": pct(lat, 
 (spark.createDataFrame(pd.DataFrame(rows))
       .write.mode("overwrite").saveAsTable(f"`{catalog}`.{schema}.part1_latency_results"))
 print(f"Wrote {catalog}.{schema}.part1_latency_results")
+
+# Stub the Part 2 results table so the dashboard's real-time freshness/serving section
+# always resolves, even on a Part-1-only deploy (Part 2 is gated off by default). Part 2's
+# notebook 10 overwrites this with measured event->online freshness + serving latency.
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS `{catalog}`.{schema}.part2_latency_results
+    (stage STRING, p50 DOUBLE, p95 DOUBLE, p99 DOUBLE)
+""")
+print(f"Ensured {catalog}.{schema}.part2_latency_results exists (empty until Part 2 runs).")

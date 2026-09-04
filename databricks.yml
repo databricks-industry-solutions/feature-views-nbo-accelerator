@@ -29,6 +29,13 @@ variables:
     default: nbo
   warehouse_id:
     description: SQL warehouse id for the app and dashboard (required — pass with --var warehouse_id=<id>)
+  dashboard_warehouse_id:
+    description: >-
+      Warehouse backing the AI/BI dashboard. Defaults to warehouse_id. When the workspace has a
+      Lakehouse Realtime (REYDEN) warehouse enabled (gated beta), deploy.local.sh auto-detects it
+      and passes it here so the dashboard runs on the low-latency RT engine; otherwise it falls
+      back to warehouse_id. The dashboard is read-only (SELECT-only), which RT requires.
+    default: ${var.warehouse_id}
   kafka_connection:
     description: Existing Unity Catalog Kafka connection name (holds bootstrap servers)
     default: msk_kafka
@@ -38,6 +45,27 @@ variables:
   kafka_topic:
     description: Kafka topic for in-session events
     default: nbo-session-events
+  allow_streaming_online:
+    description: >-
+      Part 2 streaming gate. Default "false" keeps the e2e green on Part 1 (the fully-working path)
+      and skips the MSK/streaming notebooks cleanly. Set --var allow_streaming_online=true once the
+      msk_kafka connection + service credential and a Lakebase-capable runtime are in place.
+    default: "false"
+  app_name:
+    description: >-
+      Databricks App name for the recommender UI. Override (e.g. --var app_name=nbo-recommender-<you>)
+      when the default name already exists in a shared workspace owned by someone else.
+    default: nbo-recommender
+  ranker_online_endpoint:
+    description: >-
+      Part 1 online-lookup ranker serving-endpoint name. Override in a shared workspace where the
+      default is already owned by another user (endpoint online-store linkage is owner-scoped).
+    default: nbo-ranker-online
+  ranker_realtime_endpoint:
+    description: >-
+      Part 2 route-optimized realtime ranker serving-endpoint name. Override in a shared workspace
+      where the default is already owned by another user.
+    default: nbo-ranker-realtime
 
 targets:
   # Host is intentionally omitted from both targets so nothing workspace-specific is committed.
