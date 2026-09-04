@@ -1,0 +1,47 @@
+bundle:
+  name: nbo-recommender-ui
+
+# The build artifacts are gitignored (built locally by `npm run build`), but the
+# Apps runtime runs the prebuilt dist/ (it does not build) — force them into the
+# deploy. node_modules is excluded explicitly (707MB); the Apps container installs
+# runtime deps from package.json/.npmrc (omit=dev) itself.
+sync:
+  exclude:
+    - node_modules
+    - tests
+    - playwright-report
+    - test-results
+    - .smoke-test
+    - '*.log'
+  include:
+    - dist/**
+    - client/dist/**
+
+variables:
+  app_name:
+    description: Databricks App name. Override per user/workspace to avoid a name collision.
+    default: nbo-recommender-ui
+  sql_warehouse_id:
+    description: SQL Warehouse ID for the assistant's run_sql tool (pass --var sql_warehouse_id=<id>)
+
+resources:
+  apps:
+    app:
+      name: ${var.app_name}
+      description: 'Real-time Next-Best-Offer recommender + in-app AI assistant'
+      source_code_path: ./
+      # OBO: run_sql executes as the signed-in user, so UC access applies per user.
+      user_api_scopes:
+        - sql
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.sql_warehouse_id}
+            permission: CAN_USE
+
+targets:
+  # Host comes from the CLI profile (-p <profile>) — nothing workspace-specific is committed.
+  # A git-ignored ./deploy.local.sh holds a real profile + warehouse id + app name (see README).
+  dev:
+    mode: development
+    default: true

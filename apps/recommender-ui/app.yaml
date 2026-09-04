@@ -1,0 +1,17 @@
+command: ['npm', 'run', 'start']
+env:
+  # SQL warehouse for the assistant's run_sql tool (OBO — runs as the signed-in user).
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  # Hosted Databricks FM Claude (no external provider needed).
+  - name: MODEL_MODE
+    value: 'fm'
+  - name: AGENT_MODEL
+    value: 'databricks-claude-sonnet-5'
+  # NBO data location (assistant answers about these tables).
+  - name: CATALOG
+    value: 'fins_industry_solutions'
+  # Set SCHEMA to the schema the accelerator deployed into (e.g. nbo_<username> from notebook 00,
+  # or a pinned --var schema). The app SP cannot auto-derive a per-user schema at runtime.
+  - name: SCHEMA
+    value: 'nbo'
