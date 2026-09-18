@@ -54,7 +54,7 @@ resources:
         - task_key: latency_and_freshness
           depends_on: [{ task_key: realtime_serving }]
           notebook_task:
-            notebook_path: ../notebooks/benchmark/feature_freshness_benchmark.py
+            notebook_path: ../notebooks/benchmark/feature_serving_and_freshness_benchmark.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
@@ -63,3 +63,4 @@ resources:
               service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
               allow_streaming_online: ${var.allow_streaming_online}
+              results_table: part2_latency_results
