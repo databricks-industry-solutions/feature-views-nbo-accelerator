@@ -1,0 +1,25 @@
+# Databricks App — Real-Time Next-Best-Offer demo (Streamlit).
+# Resources are wired via the Apps UI (Configure → + Add resource) and referenced
+# with valueFrom — never hardcode IDs.
+command:
+  - "streamlit"
+  - "run"
+  - "app.py"
+  - "--server.port"
+  - "8000"
+  - "--server.address"
+  - "0.0.0.0"
+
+env:
+  # SQL warehouse for reading offers/customers and the part1_latency_results table.
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  # Ranking model serving endpoint (nbo-ranker-online).
+  - name: RANKER_ENDPOINT
+    valueFrom: serving-endpoint
+  - name: CATALOG
+    value: "fins_industry_solutions"
+  # The app's service principal cannot auto-derive a per-user schema at runtime — set SCHEMA to the
+  # schema the data was deployed into (e.g. nbo_<your-username>, matching notebook 00's output).
+  - name: SCHEMA
+    value: "nbo"

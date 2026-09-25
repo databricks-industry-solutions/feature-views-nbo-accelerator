@@ -1,0 +1,66 @@
+# Part 1 — Feature Views Fundamentals. Batch feature views → train → online-lookup ranking.
+# No Vector Search, no streaming. Runs end-to-end on serverless.
+resources:
+  jobs:
+    nbo_part1_feature_views:
+      name: "[NBO] Part 1 · Feature Views Fundamentals"
+      tasks:
+        - task_key: setup
+          notebook_task:
+            notebook_path: ../notebooks/part1_feature_views/00_setup.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              online_store_name: ${var.online_store_name}
+
+        - task_key: generate_data
+          depends_on: [{ task_key: setup }]
+          notebook_task:
+            notebook_path: ../notebooks/part1_feature_views/01_generate_data.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+
+        - task_key: define_feature_views
+          depends_on: [{ task_key: generate_data }]
+          notebook_task:
+            notebook_path: ../notebooks/part1_feature_views/02_define_feature_views.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+
+        - task_key: materialize
+          depends_on: [{ task_key: define_feature_views }]
+          notebook_task:
+            notebook_path: ../notebooks/part1_feature_views/03_materialize_features.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              online_store_name: ${var.online_store_name}
+
+        - task_key: train_ranker
+          depends_on: [{ task_key: materialize }]
+          notebook_task:
+            notebook_path: ../notebooks/part1_feature_views/04_train_ranker.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+
+        - task_key: deploy_ranking_endpoint
+          depends_on: [{ task_key: train_ranker }]
+          notebook_task:
+            notebook_path: ../notebooks/part1_feature_views/05_deploy_ranking_endpoint.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              ranker_endpoint: ${var.ranker_online_endpoint}
+
+        - task_key: latency_benchmark
+          depends_on: [{ task_key: deploy_ranking_endpoint }]
+          notebook_task:
+            notebook_path: ../notebooks/benchmark/feature_serving_and_freshness_benchmark.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              ranker_endpoint: ${var.ranker_online_endpoint}
+              results_table: part1_latency_results

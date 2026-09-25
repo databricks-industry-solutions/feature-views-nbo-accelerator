@@ -25,3 +25,10 @@ build/
 # Environment files
 .env
 .env.local 
+# Python virtualenv
+.venv/
+
+# Local deploy helper holding workspace-specific values (profile, warehouse id, host).
+deploy.local.sh
+# Machine/workspace-specific resource tracking written by ad-hoc runs (holds local job ids).
+.databricks-resources.json

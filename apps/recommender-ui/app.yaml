@@ -1,0 +1,26 @@
+command: ['npm', 'run', 'start']
+env:
+  # SQL warehouse for the assistant's run_sql tool + the app's data endpoints (OBO where possible).
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  # Hosted Databricks FM Claude (no external provider needed).
+  - name: MODEL_MODE
+    value: 'fm'
+  - name: AGENT_MODEL
+    value: 'databricks-claude-sonnet-5'
+  # NBO data location (customers/offers/labels + assistant tables).
+  - name: CATALOG
+    value: 'fins_industry_solutions'
+  # Set SCHEMA to the schema the accelerator deployed into (e.g. nbo_<username> from notebook 00,
+  # or a pinned --var schema). The app SP cannot auto-derive a per-user schema at runtime.
+  - name: SCHEMA
+    value: 'nbo'
+  # Route-optimized online-lookup ranker the recommender queries (Part 1's nb05 endpoint).
+  - name: RANKER_ENDPOINT
+    value: 'nbo-ranker-online'
+  # Query SP creds (from the nbo secret scope) that mint the endpoint-downscoped OAuth token
+  # route-optimized serving requires. Injected at runtime from the scope — never stored here.
+  - name: QUERY_SP_CLIENT_ID
+    valueFrom: query-sp-client-id
+  - name: QUERY_SP_CLIENT_SECRET
+    valueFrom: query-sp-client-secret

@@ -1,94 +1,81 @@
+# Databricks Asset Bundle for the FSI Next-Best-Offer accelerator.
+#
+# Deploy (host comes from your CLI profile / DATABRICKS_HOST — nothing workspace-specific is
+# committed here):
+#   databricks bundle deploy -t dev -p <your-profile> --var warehouse_id=<sql-warehouse-id>
+#
+# Override any variable at deploy time with repeated --var flags, e.g.:
+#   --var catalog=my_catalog --var schema=nbo --var warehouse_id=abc123
+# A local, git-ignored ./deploy.local.sh can hold your real profile + warehouse id (see README).
 bundle:
-  name: demo_workflow
+  name: feature-views-nbo-accelerator
+
+include:
+  - resources/*.yml
 
 variables:
-  # Project name - replace with your solution accelerator name
-  project_name:
-    description: "Name of your solution accelerator"
-    default: "my-solution-accelerator"
-    
-  # The "warehouse_id" variable is used to reference the warehouse used by the dashboard.
+  catalog:
+    description: Unity Catalog catalog (standard storage — required for streaming Feature Views)
+    default: fins_industry_solutions
+  schema:
+    description: >-
+      Schema for all accelerator assets. Defaults to a PER-USER schema derived at deploy time from
+      the deploying identity: nbo_${workspace.current_user.short_name} (e.g. nbo_tian_tan) — the same
+      value each notebook auto-derives from current_user(), so notebooks, the AI/BI dashboard
+      (dataset_schema), and the jobs all resolve to one consistent per-user schema on a plain
+      `bundle deploy`, with no cross-user collision on a shared catalog. Pin one shared schema with
+      --var schema=<name>. (Notebooks still auto-derive nbo_<username> when the widget is blank, for
+      standalone runs outside the bundle.)
+    default: nbo_${workspace.current_user.short_name}
+  online_store_name:
+    description: Lakebase online store name (DNS-compliant — lowercase, no underscores). Keep it a simple single word so the streaming FS sink emits an unquoted Postgres target. Batch and streaming features must share this one store (multi-store lookup is unsupported and breaks route-optimized serving).
+    default: nbo
   warehouse_id:
-    lookup:
-      # Replace this with the name of your SQL warehouse.
-      warehouse: "Shared Unity Catalog Serverless"
-      
-  # Environment variable used for deployment paths
-  environment:
-    description: "Deployment environment (dev, staging, prod)"
-    default: "dev"
+    description: SQL warehouse id for the app and dashboard (required — pass with --var warehouse_id=<id>)
+  dashboard_warehouse_id:
+    description: >-
+      Warehouse backing the AI/BI dashboard. Defaults to warehouse_id. When the workspace has a
+      Lakehouse Realtime (REYDEN) warehouse enabled (gated beta), deploy.local.sh auto-detects it
+      and passes it here so the dashboard runs on the low-latency RT engine; otherwise it falls
+      back to warehouse_id. The dashboard is read-only (SELECT-only), which RT requires.
+    default: ${var.warehouse_id}
+  kafka_connection:
+    description: Existing Unity Catalog Kafka connection name (holds bootstrap servers)
+    default: msk_kafka
+  service_credential:
+    description: UC service credential for MSK IAM auth (databricks.serviceCredential)
+    default: msk_kafka
+  kafka_topic:
+    description: Kafka topic for in-session events
+    default: nbo-session-events
+  allow_streaming_online:
+    description: >-
+      Part 2 streaming gate. Default "false" keeps the e2e green on Part 1 (the fully-working path)
+      and skips the MSK/streaming notebooks cleanly. Set --var allow_streaming_online=true once the
+      msk_kafka connection + service credential and a Lakebase-capable runtime are in place.
+    default: "false"
+  app_name:
+    description: >-
+      Databricks App name for the recommender UI. Override (e.g. --var app_name=nbo-recommender-<you>)
+      when the default name already exists in a shared workspace owned by someone else.
+    default: nbo-recommender
+  ranker_online_endpoint:
+    description: >-
+      Part 1 online-lookup ranker serving-endpoint name. Override in a shared workspace where the
+      default is already owned by another user (endpoint online-store linkage is owner-scoped).
+    default: nbo-ranker-online
+  ranker_realtime_endpoint:
+    description: >-
+      Part 2 route-optimized realtime ranker serving-endpoint name. Override in a shared workspace
+      where the default is already owned by another user.
+    default: nbo-ranker-realtime
 
 targets:
+  # Host is intentionally omitted from both targets so nothing workspace-specific is committed.
+  # The CLI resolves the host from the profile you pass (-p <profile>) or DATABRICKS_HOST.
   dev:
-    default: true
     mode: development
+    default: true
 
-# Customize the resources below based on your solution accelerator needs
-resources:
-  # Uncomment and customize if you have Databricks Apps
-  # apps:
-  #   your_app:
-  #     name: "your-app-name"
-  #     description: "Your app description"
-  #     source_code_path: "/Users/${workspace.current_user.userName}/${var.project_name}-${var.environment}/files/apps/your_app"
-
-  # Uncomment and customize if you have dashboards
-  # dashboards:
-  #   your_dashboard:
-  #     display_name: "Your Dashboard"
-  #     file_path: "./dashboards/your_dashboard.lvdash.json"
-  #     warehouse_id: "${var.warehouse_id}"
-
-  # Example job workflow - customize based on your notebooks
-  jobs:
-    example_workflow:
-      name: "${var.project_name} - Example Workflow"
-      tasks:
-        - task_key: example_notebook
-          notebook_task:
-            notebook_path: "./notebooks/example_notebook.ipynb"
-        - task_key: example_databricks_notebook
-          depends_on:
-            - task_key: example_notebook
-          notebook_task:
-            notebook_path: "./notebooks/example_databricks_notebook.py"
-
-# Example resources you can uncomment and customize:
-# resources:
-#   apps:
-#     your_app:
-#       name: "your-app-name"
-#       description: "Your app description"
-#       source_code_path: "./apps/your_app"
-#
-#   jobs:
-#     your_workflow:
-#       name: "Your Workflow Name"
-#       tasks:
-#         - task_key: first_task
-#           notebook_task:
-#             notebook_path: "./notebooks/your_first_notebook.ipynb"
-#         - task_key: second_task
-#           depends_on:
-#             - task_key: first_task
-#           notebook_task:
-#             notebook_path: "./notebooks/your_second_notebook.ipynb"
-#
-#   pipelines:
-#     your_pipeline:
-#       name: "Your Pipeline"
-#       storage: "/Shared/your-pipeline"
-#       configuration:
-#         your_config: "value"
-#
-#   models:
-#     your_model:
-#       name: "Your Model"
-#       model_path: "models/your_model"
-#
-#   dashboards:
-#     your_dashboard:
-#       display_name: "Your Dashboard"
-#       file_path: "./dashboards/your_dashboard.lvdash.json"
-
-# For more options and schema, see: https://docs.databricks.com/aws/en/dev-tools/bundles/settings
+  prod:
+    mode: production

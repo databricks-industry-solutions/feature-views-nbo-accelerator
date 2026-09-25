@@ -1,0 +1,18 @@
+# End-to-end orchestrator — chains the full accelerator into one reviewable workflow:
+#   Part 1 (batch feature views → train → online-lookup ranking)  →  Part 2 (streaming feature → serving).
+# It does NOT duplicate task logic: it invokes the two existing jobs via run_job_task, so each part
+# stays independently runnable and the DAG stays easy to review. Part 2 only starts after Part 1
+# succeeds, which is required — Part 2 reuses Part 1's catalog, features, online store, and ranker.
+resources:
+  jobs:
+    nbo_end_to_end:
+      name: "[NBO] End-to-End · Feature Views + Real-Time Streaming"
+      tasks:
+        - task_key: part1_feature_views
+          run_job_task:
+            job_id: ${resources.jobs.nbo_part1_feature_views.id}
+
+        - task_key: part2_realtime_streaming
+          depends_on: [{ task_key: part1_feature_views }]
+          run_job_task:
+            job_id: ${resources.jobs.nbo_part2_realtime_streaming.id}
