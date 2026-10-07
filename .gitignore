@@ -10,3 +10,5 @@ build/
 deploy.local.sh
 # Machine/workspace-specific resource tracking written by ad-hoc runs (holds local job ids).
 .databricks-resources.json
+# Internal operator runbooks holding workspace-specific ids. Not part of the published accelerator.
+*.local.md
