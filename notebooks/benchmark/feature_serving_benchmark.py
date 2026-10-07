@@ -3,7 +3,7 @@
 # MAGIC # Feature Serving Benchmark — Feature Read + Rank (Part 1 online-lookup path)
 # MAGIC The clean Feature Views proof point: **online feature lookup + ranking**, no retrieval.
 # MAGIC The request carries only `{customer_id, offer_id, offer attrs}`; the route-optimized
-# MAGIC `nbo-ranker-online` endpoint fetches the 5 customer features from the online store by
+# MAGIC `nbo-ranker-online` endpoint fetches the 7 customer features from the online store by
 # MAGIC `customer_id` and scores the passed-in candidate set (here: the full 40-offer catalog).
 # MAGIC
 # MAGIC **Measured in-region** — this is the path that maps directly to the personalization
@@ -82,15 +82,21 @@ if resp.status_code != 200:
     )
 tok = resp.json()["access_token"]
 
+# Neutral visitor-context (OfferMatch) answers sent with every request.
+CTX_DEFAULTS = {"ctx_goal": "none", "ctx_credit": "good", "ctx_income": 85000.0, "ctx_card_spend": 1500.0,
+                "ctx_session_cat_views": 0}
+
 def rank(customer_id):
-    # Request carries ONLY customer_id + offer fields. The endpoint fetches the 5 customer
-    # features (avg_balance_30d, spend_90d, txn_count_7d, loyalty_tier, risk_band) online.
+    # Request carries ONLY customer_id + offer fields + visitor context. The endpoint fetches the 7
+    # customer features (avg_balance_30d, spend_90d, txn_count_7d, loyalty_tier, risk_band,
+    # annual_income, tenure_months) online.
     recs = [{
         "customer_id": customer_id,
         "offer_id": o["offer_id"],
         "product_category": o["product_category"],
         "base_reward": float(o["base_reward"]),
         "tier_requirement": int(o["tier_requirement"]),
+        **CTX_DEFAULTS,
     } for o in offers]
     r = requests.post(url, headers={"Authorization": f"Bearer {tok}"},
                       json={"dataframe_records": recs})

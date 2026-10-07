@@ -66,9 +66,16 @@ w = WorkspaceClient()
 
 # Feature contract (must match notebook 05's training set).
 CUST_FEATURES = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
-                 "cust_loyalty_tier", "cust_risk_band"]
-CAT = ["offer_id", "product_category", "cust_loyalty_tier", "cust_risk_band"]
-NUM = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d", "base_reward", "tier_requirement"]
+                 "cust_loyalty_tier", "cust_risk_band", "cust_annual_income", "cust_tenure_months"]
+# Request-time columns: the 4 offer columns + the visitor's OfferMatch answers (ctx_*).
+REQ = ["offer_id", "product_category", "base_reward", "tier_requirement",
+       "ctx_goal", "ctx_credit", "ctx_income", "ctx_card_spend", "ctx_session_cat_views"]
+# Neutral visitor-context answers for synthetic scoring frames.
+CTX_DEFAULTS = {"ctx_goal": "none", "ctx_credit": "good", "ctx_income": 85000.0, "ctx_card_spend": 1500.0,
+                "ctx_session_cat_views": 0}
+CAT = ["product_category", "cust_loyalty_tier", "cust_risk_band", "ctx_goal", "ctx_credit"]
+NUM = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d", "cust_annual_income", "cust_tenure_months",
+       "base_reward", "tier_requirement", "ctx_income", "ctx_card_spend", "ctx_session_cat_views"]
 
 def pct(a, p):
     if not a:
@@ -115,9 +122,9 @@ offers_df = spark.table(f"`{catalog}`.{schema}.offers").select(
     "offer_id", "product_category", "base_reward", "tier_requirement")
 labels = labels.join(offers_df, on="offer_id", how="left")
 
-# ColumnSelection request features (offer_id/product_category/base_reward/tier_requirement) were
-# registered in notebook 05; fetch them to build the same training set.
-offer_feats = [gf(c) for c in ["offer_id", "product_category", "base_reward", "tier_requirement"]]
+# ColumnSelection request features (the 4 offer columns + the ctx_* visitor columns, which the
+# labels table already carries) were registered in notebook 05; fetch them to build the same training set.
+offer_feats = [gf(c) for c in REQ]
 ts = fe.create_training_set(df=labels, features=cust_feats + offer_feats, label="accepted",
                             exclude_columns=["record_id", "customer_id", "ts", "updated_at"])
 tdf = ts.load_df().toPandas()
@@ -176,7 +183,7 @@ print(f"pre-fetched features for {len(FEATURES)} customers")
 # MAGIC ```
 # MAGIC Set `lakebase_host`, `lakebase_user` (your username / SP client id), and
 # MAGIC `lakebase_endpoint_path`. Leave `lakebase_dbname` blank to use the catalog name (FE syncs
-# MAGIC online tables into a Postgres DB named after the catalog). Tables are auto-discovered; the 5
+# MAGIC online tables into a Postgres DB named after the catalog). Tables are auto-discovered; the 7
 # MAGIC `cust_*` features may span several online tables, so set `lakebase_online_tables` only to
 # MAGIC override discovery.
 # COMMAND ----------
@@ -212,7 +219,7 @@ def _lakebase_conn():
                           password=_lakebase_token(), ssl_context=ssl.create_default_context())
 
 def _discover_lookup_plan(conn):
-    """Map each of the 5 customer features to the Postgres online table that serves it. FE spreads
+    """Map each of the 7 customer features to the Postgres online table that serves it. FE spreads
     them across per-feature online tables; prefer base tables over *_latest_view / *_partial_aggregates.
     Filter in Python to avoid array-parameter binding differences across drivers."""
     cur = conn.cursor()
@@ -266,7 +273,7 @@ def lookup_prefetch(cid):
     return dict(FEATURES[cid])
 
 def lookup_lakebase(cid):
-    """Read all 5 customer features by key across their online tables (one point-read per table),
+    """Read all 7 customer features by key across their online tables (one point-read per table),
     mirroring the serving container's online lookup."""
     feats = {}
     cur = _LB.cursor()
@@ -308,7 +315,7 @@ class RankerWithTiming(mlflow.pyfunc.PythonModel):
         feats = self._lookup(cid)                       # online feature read by key
         lookup_ms = (time.perf_counter() - t0) * 1000
 
-        frame = model_input[["offer_id", "product_category", "base_reward", "tier_requirement"]].copy()
+        frame = model_input[REQ].copy()
         for k, v in feats.items():
             frame[k] = v
         for c in CAT:
@@ -337,6 +344,7 @@ def _recs(customer_id):
         "product_category": o["product_category"],
         "base_reward": float(o["base_reward"]),
         "tier_requirement": int(o["tier_requirement"]),
+        **CTX_DEFAULTS,
     } for o in offers]
 
 def request_records(customer_id):

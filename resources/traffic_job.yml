@@ -1,0 +1,25 @@
+# "Simulate live traffic" for the Lakeshore Bank app: a continuous Kafka producer (notebook 08) that streams
+# synthetic visitor events into MSK so the streaming Feature Views (and the app's scale dashboard) show live
+# load. The app starts and stops it through the Jobs API (it is bound to the app with CAN_MANAGE_RUN).
+# Each run stops by itself after duration_sec so a forgotten demo doesn't keep producing.
+resources:
+  jobs:
+    nbo_traffic_simulator:
+      name: "[NBO] Live traffic simulator"
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: produce
+          notebook_task:
+            notebook_path: ../notebooks/part2_realtime_two_stage/08_kafka_topic_and_producer.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              kafka_connection: ${var.kafka_connection}
+              service_credential: ${var.service_credential}
+              topic: ${var.kafka_topic}
+              mode: continuous
+              events_per_sec: "100"
+              # Warm process stays available for pause/resume throughout a demo day; the demo power
+              # script cancels it when the environment is paused.
+              duration_sec: "14400"
+              allow_streaming_online: ${var.allow_streaming_online}

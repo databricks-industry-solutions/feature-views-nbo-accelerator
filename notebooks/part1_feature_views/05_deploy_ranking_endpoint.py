@@ -51,13 +51,18 @@ mlflow.set_registry_uri("databricks-uc")
 fe = FeatureEngineeringClient()
 
 # COMMAND ----------
-# MAGIC %md ## Features: 5 customer features (online lookup) + 4 offer columns (RequestSource)
+# MAGIC %md ## Features: 7 customer features (online lookup) + offer and visitor columns (RequestSource)
+# MAGIC - **Online lookup by `customer_id`:** balances, spend, txn count, tier, risk, income, tenure.
+# MAGIC - **Request-time (`RequestSource`):** the 4 offer columns, plus the visitor's OfferMatch answers
+# MAGIC   (`ctx_goal`, `ctx_credit`, `ctx_income`, `ctx_card_spend`) and the visitor's website clicks per
+# MAGIC   category this session (`ctx_session_cat_views`). The app sends these with every request.
 # COMMAND ----------
 def gf(n):
     return fe.get_feature(full_name=f"{catalog}.{schema}.{n}")
 
-cust_feats = [gf(n) for n in ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
-                              "cust_loyalty_tier", "cust_risk_band"]]
+CUST = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
+        "cust_loyalty_tier", "cust_risk_band", "cust_annual_income", "cust_tenure_months"]
+cust_feats = [gf(n) for n in CUST]
 
 # Declare the request-time offer columns as a RequestSource, then register a passthrough
 # ColumnSelection feature per column (name MUST equal the column name).
@@ -66,6 +71,13 @@ req = RequestSource(schema=[
     FieldDefinition(name="product_category", data_type=ScalarDataType.STRING),
     FieldDefinition(name="base_reward", data_type=ScalarDataType.DOUBLE),
     FieldDefinition(name="tier_requirement", data_type=ScalarDataType.INTEGER),
+    FieldDefinition(name="ctx_goal", data_type=ScalarDataType.STRING),
+    FieldDefinition(name="ctx_credit", data_type=ScalarDataType.STRING),
+    FieldDefinition(name="ctx_income", data_type=ScalarDataType.DOUBLE),
+    FieldDefinition(name="ctx_card_spend", data_type=ScalarDataType.DOUBLE),
+    # Website clicks in this offer's category during the visitor's session (last 10 min). The app counts
+    # them and sends one value per offer row, so a click re-ranks on the very next request.
+    FieldDefinition(name="ctx_session_cat_views", data_type=ScalarDataType.INTEGER),
 ])
 
 def get_or_create_req(colname):
@@ -75,8 +87,9 @@ def get_or_create_req(colname):
         return fe.create_feature(source=req, function=ColumnSelection(column=colname),
                                  catalog_name=catalog, schema_name=schema, name=colname)
 
-offer_feats = [get_or_create_req(c) for c in
-               ["offer_id", "product_category", "base_reward", "tier_requirement"]]
+REQ = ["offer_id", "product_category", "base_reward", "tier_requirement",
+       "ctx_goal", "ctx_credit", "ctx_income", "ctx_card_spend", "ctx_session_cat_views"]
+offer_feats = [get_or_create_req(c) for c in REQ]
 
 # COMMAND ----------
 # MAGIC %md ## Point-in-time training set + train
@@ -92,8 +105,10 @@ ts = fe.create_training_set(
 )
 tdf = ts.load_df().toPandas()
 
-CAT = ["offer_id", "product_category", "cust_loyalty_tier", "cust_risk_band"]
-NUM = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d", "base_reward", "tier_requirement"]
+# offer_id is an identifier, not a preference signal. Encoding it made one arbitrary offer dominate.
+CAT = ["product_category", "cust_loyalty_tier", "cust_risk_band", "ctx_goal", "ctx_credit"]
+NUM = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d", "cust_annual_income", "cust_tenure_months",
+       "base_reward", "tier_requirement", "ctx_income", "ctx_card_spend", "ctx_session_cat_views"]
 X = tdf[CAT + NUM].copy()
 for c in CAT:
     X[c] = X[c].astype(str)
@@ -120,7 +135,95 @@ model = Pipeline([
                       subsample=0.8, colsample_bytree=0.8, random_state=42)),
 ])
 model.fit(Xtr, ytr)
-print("val_auc:", roc_auc_score(yte, model.predict_proba(Xte)[:, 1]))
+val_auc = roc_auc_score(yte, model.predict_proba(Xte)[:, 1])
+print("val_auc:", round(val_auc, 4))
+
+# COMMAND ----------
+# MAGIC %md ## Personalization check: the top offer must differ across customers
+# MAGIC Rank all 40 offers for 2,000 customers (features as of now, neutral OfferMatch answers) and
+# MAGIC check the top-1 mix. If one category wins for most customers, the demo can't show personalization.
+# COMMAND ----------
+cust_sample = (spark.table(f"`{catalog}`.{schema}.customers").select("customer_id", "risk_band", "annual_income")
+               .orderBy(F.xxhash64("customer_id")).limit(2000))
+grid = (cust_sample.crossJoin(offers)
+        .withColumn("ts", F.current_timestamp())          # timestamp key for the transaction windows
+        .withColumn("updated_at", F.col("ts"))            # timestamp key for the ColumnSelection features
+        .withColumn("ctx_goal", F.lit("none"))
+        .withColumn("ctx_credit", F.expr("CASE risk_band WHEN 'low' THEN 'excellent' WHEN 'medium' THEN 'good' ELSE 'fair' END"))
+        .withColumn("ctx_income", F.col("annual_income").cast("double"))
+        .withColumn("ctx_card_spend", (F.col("annual_income") / 12 * 0.1).cast("double"))
+        .withColumn("ctx_session_cat_views", F.lit(0).cast("int"))
+        .drop("risk_band", "annual_income"))
+gdf = fe.create_training_set(df=grid, features=cust_feats + offer_feats, label=None,
+                             exclude_columns=["ts", "updated_at"]).load_df().toPandas()
+GX = gdf[CAT + NUM].copy()
+for c in CAT:
+    GX[c] = GX[c].astype(str)
+for c in NUM:
+    GX[c] = pd.to_numeric(GX[c], errors="coerce")
+gdf["score"] = model.predict_proba(GX)[:, 1]
+top1 = gdf.loc[gdf.groupby("customer_id")["score"].idxmax()]
+mix = top1["product_category"].value_counts(normalize=True).round(3)
+print("val_auc:", round(val_auc, 4), "| distinct top-1 offers:", top1["offer_id"].nunique())
+print("top-1 category share:\n", mix.to_string())
+assert val_auc >= 0.70, f"val AUC {val_auc:.3f} < 0.70: labels carry too little signal"
+assert mix.max() <= 0.5, f"one category wins for {mix.max():.0%} of customers: not personalized"
+if mix.max() > 0.4:
+    print(f"WARNING: top category share {mix.max():.0%} is above the 40% target.")
+
+# An explicit OfferMatch answer must visibly change the recommendation. Re-score the same customer ×
+# offer grid with each selected goal; at least 60% of customers must get that category at rank #1.
+# This catches the demo-breaking failure where Starter Secured Card wins for nearly every answer.
+goal_hit_rate = {}
+base_cols = gdf[["customer_id", "offer_id", "product_category"]].copy()
+for goal in ["credit_card", "savings", "personal_loan", "mortgage", "investment"]:
+    Q = gdf[CAT + NUM].copy()
+    Q["ctx_goal"] = goal
+    for c in CAT:
+        Q[c] = Q[c].astype(str)
+    for c in NUM:
+        Q[c] = pd.to_numeric(Q[c], errors="coerce")
+    ranked = base_cols.copy()
+    ranked["score"] = model.predict_proba(Q)[:, 1]
+    best = ranked.loc[ranked.groupby("customer_id")["score"].idxmax()]
+    goal_hit_rate[goal] = round(float((best["product_category"] == goal).mean()), 3)
+print("OfferMatch goal -> top-category hit rate:", goal_hit_rate)
+assert min(goal_hit_rate.values()) >= 0.60, (
+    f"OfferMatch answers do not drive ranking strongly enough: {goal_hit_rate}")
+
+# The three guest controls must change WHICH product wins within the selected category, not merely
+# change its probability. This is the customer-visible personalization contract for OfferMatch.
+def top_offer_for(category, **overrides):
+    mask = gdf["product_category"] == category
+    Q = gdf.loc[mask, CAT + NUM].copy()
+    for col, value in overrides.items():
+        Q[col] = value
+    for c in CAT:
+        Q[c] = Q[c].astype(str)
+    for c in NUM:
+        Q[c] = pd.to_numeric(Q[c], errors="coerce")
+    ranked = gdf.loc[mask, ["customer_id", "offer_id"]].copy()
+    ranked["score"] = model.predict_proba(Q)[:, 1]
+    return ranked.loc[ranked.groupby("customer_id")["score"].idxmax()].set_index("customer_id")["offer_id"]
+
+def switch_rate(a, b):
+    joined = pd.concat([a.rename("a"), b.rename("b")], axis=1).dropna()
+    return round(float((joined["a"] != joined["b"]).mean()), 3)
+
+control_switch = {
+    "credit": switch_rate(
+        top_offer_for("credit_card", ctx_goal="credit_card", ctx_credit="fair", ctx_card_spend=1500),
+        top_offer_for("credit_card", ctx_goal="credit_card", ctx_credit="excellent", ctx_card_spend=1500)),
+    "income": switch_rate(
+        top_offer_for("mortgage", ctx_goal="mortgage", ctx_income=45000),
+        top_offer_for("mortgage", ctx_goal="mortgage", ctx_income=250000)),
+    "card_spend": switch_rate(
+        top_offer_for("credit_card", ctx_goal="credit_card", ctx_credit="good", ctx_card_spend=250),
+        top_offer_for("credit_card", ctx_goal="credit_card", ctx_credit="good", ctx_card_spend=7000)),
+}
+print("OfferMatch control -> top-product switch rate:", control_switch)
+assert min(control_switch.values()) >= 0.20, (
+    f"OfferMatch controls do not change the recommended product often enough: {control_switch}")
 
 # COMMAND ----------
 # MAGIC %md ## Log with feature metadata → register → deploy route-optimized
@@ -159,14 +262,10 @@ from databricks.sdk.service.serving import (
 )
 w = WorkspaceClient()
 ENDPOINT, SERVED = dbutils.widgets.get("ranker_endpoint"), "nbo-online-ro"
-# scale_to_zero_enabled=True so the endpoint costs nothing while idle — the right default for an
-# accelerator someone clones and forgets about. Trade-off: after ~30 min idle the endpoint scales to
-# zero and the next request pays a cold start (tens of seconds), so the latency numbers in notebook
-# 06 are WARM numbers. For a live demo or a latency benchmark, warm it with a few throwaway requests
-# first, or set scale_to_zero_enabled=False for the duration of the demo (and remember it then bills
-# continuously until you delete it).
+# Demo endpoint stays provisioned so user actions never pay a cold start. `scripts/demo_power.sh pause`
+# must restore scale-to-zero after the demo to avoid idle serving cost.
 served = [ServedEntityInput(name=SERVED, entity_name=MODEL, entity_version=newest.version,
-                            workload_size="Small", scale_to_zero_enabled=True)]
+                            workload_size="Small", scale_to_zero_enabled=False)]
 if ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
     w.serving_endpoints.update_config(name=ENDPOINT, served_entities=served)
 else:
@@ -216,6 +315,9 @@ else:
 # MAGIC ```python
 # MAGIC dp = w.serving_endpoints_data_plane   # route-optimized → data-plane client
 # MAGIC recs = [{"customer_id": cid, "offer_id": o.offer_id, "product_category": o.product_category,
-# MAGIC          "base_reward": o.base_reward, "tier_requirement": o.tier_requirement} for o in offers]
+# MAGIC          "base_reward": o.base_reward, "tier_requirement": o.tier_requirement,
+# MAGIC          "ctx_goal": "none", "ctx_credit": "good", "ctx_income": 85000.0, "ctx_card_spend": 1500.0,
+# MAGIC          "ctx_session_cat_views": 0}
+# MAGIC         for o in offers]
 # MAGIC preds = dp.query(name="nbo-ranker-online", dataframe_records=recs).predictions
 # MAGIC ```

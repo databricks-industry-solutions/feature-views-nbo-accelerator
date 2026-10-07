@@ -1,38 +1,68 @@
 import { useEffect, useState } from 'react';
-import { createBrowserRouter, RouterProvider, Outlet } from 'react-router';
-import { Sidebar } from '@/shell/Sidebar';
-import { RecommenderView } from '@/views/RecommenderView';
-import { ArchitectureView } from '@/views/ArchitectureView';
+import { createBrowserRouter, RouterProvider, Outlet, useLocation, useNavigate } from 'react-router';
+import './bank.css';
+import { api, type AppConfig } from '@/lib/api';
+import { BankView } from '@/views/BankView';
+import { DashboardView } from '@/views/DashboardView';
+import { HowView } from '@/views/HowView';
+
+const TABS: { path: string; label: string }[] = [
+  { path: '/', label: '1 · Lakeshore Bank (customer view)' },
+  { path: '/dashboard', label: '2 · Scale dashboard' },
+  { path: '/how', label: '3 · How it works' },
+];
+
+export interface ShellContext {
+  config: AppConfig | null;
+}
 
 function Shell() {
-  // Catalog/schema are read from the server (env-driven), never hardcoded, so the header
-  // reflects whatever schema this deployment was pointed at.
-  const [cfg, setCfg] = useState<{ catalog: string; schema: string } | null>(null);
+  const loc = useLocation();
+  const nav = useNavigate();
+  const [xray, setXray] = useState(false);
+  const [config, setConfig] = useState<AppConfig | null>(null);
+
   useEffect(() => {
-    fetch('/api/config')
-      .then((r) => r.json())
-      .then((d) => setCfg({ catalog: d.catalog, schema: d.schema }))
-      .catch(() => setCfg(null));
+    api.config().then(setConfig).catch(() => setConfig(null));
   }, []);
 
+  const onDash = loc.pathname.startsWith('/dashboard');
+  const onHow = loc.pathname.startsWith('/how');
+  const onBank = !onDash && !onHow;
+  const ctx: ShellContext = { config };
+
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--nbo-canvas)]">
-      <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-[var(--nbo-line)] bg-white/60 px-6 py-2.5 backdrop-blur-sm">
-          <div className="flex items-center gap-2 text-[12px] text-neutral-500">
-            <span className="font-medium text-neutral-700">{cfg?.catalog ?? 'Unity Catalog'}</span>
-            <span className="text-neutral-300">/</span>
-            <span>{cfg?.schema ?? '…'}</span>
-          </div>
-          <span className="rounded-full bg-white px-3 py-1 text-[11px] font-medium text-neutral-600 shadow-sm ring-1 ring-[var(--nbo-line)]">
-            Feature Views · Model Serving
-          </span>
-        </header>
-        <div className="min-h-0 flex-1 overflow-auto">
-          <Outlet />
+    <div className={`nbo2${xray ? ' xray' : ''}`}>
+      <div className="mockbar">
+        <b>NBO Accelerator</b>
+        <span style={{ opacity: 0.6 }} className="mono">
+          {config ? `${config.catalog}.${config.schema}` : ''}
+        </span>
+        <div className="tabs">
+          {TABS.map((t) => (
+            <button
+              key={t.path}
+              className={`tab${(t.path === '/' ? onBank : t.path === '/dashboard' ? onDash : onHow) ? ' on' : ''}`}
+              onClick={() => {
+                nav(t.path);
+                window.scrollTo(0, 0);
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
+        <div className="spacer" />
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          Databricks layer{' '}
+          <button className={`sw${xray ? ' on' : ''}`} aria-label="Toggle Databricks layer" onClick={() => setXray((v) => !v)} />
+        </span>
       </div>
+      {/* The bank site stays mounted so the visitor's session (sign-in, answers, ranks) survives tab switches. */}
+      <div style={{ display: onBank ? 'block' : 'none' }}>
+        <BankView config={config} />
+      </div>
+      <Outlet context={ctx} />
     </div>
   );
 }
@@ -42,8 +72,10 @@ const router = createBrowserRouter([
     path: '/',
     element: <Shell />,
     children: [
-      { index: true, element: <RecommenderView /> },
-      { path: 'architecture', element: <ArchitectureView /> },
+      { index: true, element: null },
+      { path: 'dashboard', element: <DashboardView /> },
+      { path: 'how', element: <HowView /> },
+      { path: '*', element: null },
     ],
   },
 ]);

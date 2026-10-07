@@ -66,7 +66,7 @@ def pct(a, p):
 
 # COMMAND ----------
 # MAGIC %md ## 1 · Serving latency — online feature-read + rank-all (no retrieval)
-# MAGIC Request carries only `customer_id` + offer fields; the endpoint looks up all 6 customer
+# MAGIC Request carries only `customer_id` + offer fields + visitor context; the endpoint looks up all 8 customer
 # MAGIC features (incl. streaming `cust_clicks_10m`) online and scores the full offer catalog.
 # MAGIC
 # MAGIC **Auth (route-optimized endpoints):** these require an OAuth token **downscoped to the
@@ -108,6 +108,10 @@ if resp.status_code != 200:
     )
 tok = resp.json()["access_token"]
 
+# Neutral visitor-context (OfferMatch) answers sent with every request.
+CTX_DEFAULTS = {"ctx_goal": "none", "ctx_credit": "good", "ctx_income": 85000.0, "ctx_card_spend": 1500.0,
+                "ctx_session_cat_views": 0}
+
 def rank(customer_id):
     recs = [{
         "customer_id": customer_id,
@@ -115,6 +119,7 @@ def rank(customer_id):
         "product_category": o["product_category"],
         "base_reward": float(o["base_reward"]),
         "tier_requirement": int(o["tier_requirement"]),
+        **CTX_DEFAULTS,
     } for o in offers]
     r = requests.post(url, headers={"Authorization": f"Bearer {tok}"},
                       json={"dataframe_records": recs})

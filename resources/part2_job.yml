@@ -11,7 +11,22 @@ resources:
         # the LATEST Kafka offset, so the stream must exist and be RUNNING *before* any events are
         # produced. 07 therefore runs FIRST and blocks until its ingestion pipeline is RUNNING;
         # only then does the producer (08) feed events that the pipeline will actually capture.
+        # A rebuilt MSK cluster starts with no topics (auto-create is off), so create the topic before
+        # 07 starts the ingestion pipeline that subscribes to it.
+        - task_key: kafka_topic
+          notebook_task:
+            notebook_path: ../notebooks/part2_realtime_two_stage/08_kafka_topic_and_producer.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              kafka_connection: ${var.kafka_connection}
+              service_credential: ${var.service_credential}
+              topic: ${var.kafka_topic}
+              mode: topic
+              allow_streaming_online: ${var.allow_streaming_online}
+
         - task_key: streaming_feature_views
+          depends_on: [{ task_key: kafka_topic }]
           notebook_task:
             notebook_path: ../notebooks/part2_realtime_two_stage/07_streaming_feature_views.py
             base_parameters:
@@ -22,8 +37,23 @@ resources:
               online_store_name: ${var.online_store_name}
               allow_streaming_online: ${var.allow_streaming_online}
 
-        - task_key: kafka_producer
+        # Replay the label-linked session history (original event_time) so training sees in-session
+        # signal at label time. Without it cust_cat_views_10m is ~0 for every label (see nb08 §3r).
+        - task_key: kafka_replay_history
           depends_on: [{ task_key: streaming_feature_views }]
+          notebook_task:
+            notebook_path: ../notebooks/part2_realtime_two_stage/08_kafka_topic_and_producer.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              kafka_connection: ${var.kafka_connection}
+              service_credential: ${var.service_credential}
+              topic: ${var.kafka_topic}
+              mode: replay
+              allow_streaming_online: ${var.allow_streaming_online}
+
+        - task_key: kafka_producer
+          depends_on: [{ task_key: kafka_replay_history }]
           # bounded burst, produced AFTER 07 has confirmed the ingestion pipeline is RUNNING.
           # A bounded burst into a live pipeline is captured and materialized to the online store
           # (this is the proven recipe from the working reference notebook). Do NOT use continuous
@@ -49,6 +79,15 @@ resources:
               catalog: ${var.catalog}
               schema: ${var.schema}
               ranker_endpoint: ${var.ranker_realtime_endpoint}
+              allow_streaming_online: ${var.allow_streaming_online}
+
+        - task_key: feature_serving_endpoint
+          depends_on: [{ task_key: realtime_serving }]
+          notebook_task:
+            notebook_path: ../notebooks/part2_realtime_two_stage/10_feature_serving_endpoint.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
               allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: latency_and_freshness

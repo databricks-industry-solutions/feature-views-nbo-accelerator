@@ -46,8 +46,8 @@ N_LABELS = 400_000
 # would register a signature-less model that UC refuses), and the Lakebase online feature store
 # rejects PostgreSQL NUMERIC (endpoint deploy fails with "Online feature store setup failed").
 # Returning DOUBLE here fixes the whole class at the source.
-def u(salt: str) -> str:
-    return f"CAST(pmod(xxhash64(CAST(id AS STRING), '{salt}'), 1000000000) / 1000000000.0 AS DOUBLE)"
+def u(salt: str, key: str = "CAST(id AS STRING)") -> str:
+    return f"CAST(pmod(xxhash64({key}, '{salt}'), 1000000000) / 1000000000.0 AS DOUBLE)"
 
 # COMMAND ----------
 # MAGIC %md ## Customers — latest-attribute source (ColumnSelection features read this)
@@ -68,26 +68,69 @@ FROM range(0, {N_CUSTOMERS}) AS t(id)
 # COMMAND ----------
 # MAGIC %md ## Offers — NBO catalog; ranked directly by the online-lookup ranker (nb 05)
 # COMMAND ----------
+# Exactly 8 distinct offers per category (40 total). Category and variant are derived from id, so
+# every card has unique, category-correct copy — no grid full of identical "Starter Secured Card" rows.
 spark.sql(f"""
 CREATE OR REPLACE TABLE offers AS
-SELECT concat('offer_', id) AS offer_id,
-       element_at(array('credit_card','savings','personal_loan','mortgage','investment'),
-                  CAST({u('o_cat')}*5 AS INT)+1) AS product_category,
-       element_at(array(
-         'Premium Rewards Credit Card with 3% cashback on all purchases',
-         'High-Yield Savings Account with 4.5% APY and no minimum balance',
-         'Personal Loan up to 50k with fixed low APR and flexible terms',
-         '30-Year Fixed Mortgage with competitive rates and no origination fee',
-         'Diversified Investment Portfolio with robo-advisor and low fees',
-         'Travel Credit Card with airline miles and no foreign transaction fees',
-         'Student Checking Account with no monthly fees and overdraft protection',
-         'Home Equity Line of Credit with variable rate and easy access',
-         'Retirement IRA with tax advantages and employer matching guidance',
-         'Business Credit Card with expense tracking and cashback rewards'),
-         CAST({u('o_text')}*10 AS INT)+1) AS offer_text,
-       ROUND({u('o_reward')}*100, 2) AS base_reward,
-       CAST({u('o_tier')}*3 AS INT)+1 AS tier_requirement
-FROM range(0, {N_OFFERS}) AS t(id)
+WITH o AS (
+  SELECT id,
+         element_at(array('credit_card','savings','personal_loan','mortgage','investment'),
+                    CAST(pmod(id, 5) AS INT)+1) AS product_category,
+         CAST(floor(id/5) AS INT)+1 AS variant,
+         ROUND({u('o_reward')}*100, 2) AS base_reward,
+         LEAST(3, CAST(floor(floor(id/5)/3) AS INT)+1) AS tier_requirement
+  FROM range(0, {N_OFFERS}) AS t(id)
+)
+SELECT concat('offer_', id) AS offer_id, product_category,
+       element_at(map(
+         'credit_card', array(
+           'Starter Secured Card that builds credit with no annual fee',
+           'Cash+ Everyday Card with 3% cashback on everyday purchases',
+           'Voyager Travel Card with airline miles and no foreign transaction fee',
+           'Dining Rewards Card with 4x points at restaurants',
+           'Balance Transfer Card with 0% introductory APR',
+           'Business Cashback Card with expense controls',
+           'Summit Platinum Card with airport lounge access',
+           'Premier Airline Card with companion benefits'),
+         'savings', array(
+           'Everyday Savings Account with no minimum balance',
+           'High-Yield Savings Account with a competitive variable APY',
+           'Goal Builder Savings with automated savings rules',
+           '12-Month CD with a guaranteed fixed APY',
+           'Money Market Account with checkwriting access',
+           'Relationship Savings with loyalty rate boosts',
+           'Premier CD Ladder with flexible maturities',
+           'Private Client Cash Reserve with premium rates'),
+         'personal_loan', array(
+           'Small Expense Loan with simple fixed payments',
+           'Fixed-Rate Personal Loan with funding in one day',
+           'Debt Consolidation Loan with no origination fee',
+           'Home Improvement Loan with flexible terms',
+           'Major Purchase Loan with predictable monthly payments',
+           'Medical Financing Loan with no prepayment penalty',
+           'Premier Personal Loan with a relationship rate discount',
+           'Private Client Credit Line with flexible draws'),
+         'mortgage', array(
+           'First-Time Homebuyer Mortgage with a low down payment',
+           'HomeReady Mortgage with flexible income guidelines',
+           '30-Year Fixed Mortgage with predictable payments',
+           '15-Year Fixed Mortgage with faster equity building',
+           'Adjustable-Rate Mortgage with a lower initial rate',
+           'Mortgage Refinance with streamlined closing',
+           'Home Equity Line of Credit with flexible access',
+           'Jumbo Mortgage with private-client pricing'),
+         'investment', array(
+           'Starter Investment Account with guided portfolios',
+           'Robo Portfolio with automatic rebalancing',
+           'Sustainable Investing Portfolio with ESG preferences',
+           'Traditional IRA with tax-deferred growth',
+           'Roth IRA with tax-free qualified withdrawals',
+           'Retirement Rollover Service with advisor guidance',
+           'Managed Portfolio with a dedicated advisor',
+           'Private Wealth Advisory with tax-aware strategies')
+       )[product_category], variant) AS offer_text,
+       base_reward, tier_requirement
+FROM o
 """)
 
 # COMMAND ----------
@@ -126,41 +169,133 @@ FROM range(0, {N_SESSION_EVENTS}) AS t(id)
 
 # COMMAND ----------
 # MAGIC %md ## Labels — offer acceptances for point-in-time training
-# MAGIC Acceptance carries **real signal** (a logistic model of loyalty tier, risk band, income,
-# MAGIC tenure, and offer reward-vs-tier fit) so the ranker learns something meaningful
-# MAGIC (val AUC ≈ 0.70), not noise. ~36% base accept rate.
+# MAGIC Each label is one offer **impression** with the context a real visitor would carry:
+# MAGIC - **stored customer attributes** (looked up online by `customer_id`): tier, risk, income, tenure;
+# MAGIC - **request-time answers** (`ctx_*`, passed in the request): stated goal, self-rated credit,
+# MAGIC   stated income, monthly card spend;
+# MAGIC - **in-session behavior**: half the impressions get 1-4 session events in the 10 minutes before
+# MAGIC   `ts`, mostly in the visitor's latent "need" category. They reach the ranker two ways:
+# MAGIC   - **website clicks** (`device = 'web'`) are what the bank's site sees in the visitor's own session,
+# MAGIC     so they are a **request-time** feature, `ctx_session_cat_views` (the app sends the count);
+# MAGIC   - **mobile-app activity** (`ios`/`android`) arrives on another channel: the events are appended to
+# MAGIC     `session_events`, replayed into Kafka with their original `event_time` (notebook 08), and reach
+# MAGIC     the ranker as the **streaming** feature `cust_mobile_cat_views_10m` (Part 2).
+# MAGIC
+# MAGIC Acceptance is a logistic model with **customer x offer interactions** (tier affinity by category,
+# MAGIC risk gating on credit products, income and tenure fit, goal and in-session intent matches), so the
+# MAGIC best offer differs from customer to customer.
 # COMMAND ----------
 spark.sql(f"""
-CREATE OR REPLACE TABLE labels AS
+CREATE OR REPLACE TEMP VIEW labels_ctx AS
 WITH base AS (
   SELECT concat('lbl_', id) AS record_id,
          concat('cust_', CAST({u('l_cust')}*{N_CUSTOMERS} AS INT)) AS customer_id,
          concat('offer_', CAST({u('l_offer')}*{N_OFFERS} AS INT)) AS offer_id,
          CAST(from_unixtime(1748000000 + CAST({u('l_ts')}*3000000 AS INT)) AS TIMESTAMP) AS ts,
-         {u('l_noise')} AS noise
+         {u('l_noise')} AS noise, {u('l_need')} AS un, {u('l_goal')} AS ug, {u('l_goal2')} AS ug2,
+         {u('l_cred')} AS uc, {u('l_cred2')} AS uc2, {u('l_inc')} AS ui, {u('l_spend')} AS us, {u('l_intent')} AS uk
   FROM range(0, {N_LABELS}) AS t(id)
 ),
-joined AS (
-  SELECT b.*, c.loyalty_tier, c.risk_band, c.annual_income, c.tenure_months,
-         o.tier_requirement, o.base_reward
-  FROM base b JOIN customers c ON b.customer_id = c.customer_id
-              JOIN offers o    ON b.offer_id    = o.offer_id
+c AS (
+  SELECT b.*, cu.risk_band, cu.annual_income, cu.tenure_months,
+         CASE cu.loyalty_tier WHEN 'bronze' THEN 0 WHEN 'silver' THEN 1 WHEN 'gold' THEN 2 ELSE 3 END AS tier_idx
+  FROM base b JOIN customers cu ON b.customer_id = cu.customer_id
 ),
-scored AS (
-  SELECT record_id, customer_id, offer_id, ts, noise,
-         (-1.5
-          + CASE loyalty_tier WHEN 'platinum' THEN 1.6 WHEN 'gold' THEN 1.0
-                              WHEN 'silver' THEN 0.4 ELSE 0.0 END
-          + CASE risk_band WHEN 'low' THEN 0.7 WHEN 'medium' THEN 0.2 ELSE -0.5 END
-          + (annual_income/250000.0)*0.8
-          + (tenure_months/120.0)*0.5
-          + (base_reward/100.0)*0.6
-          - tier_requirement*0.3) AS logit
-  FROM joined
+n AS (  -- latent need: what this visitor is actually in the market for, skewed by tier
+  SELECT *, CASE
+      WHEN un < element_at(array(.35, .30, .20, .15), tier_idx + 1) THEN 'credit_card'
+      WHEN un < element_at(array(.70, .55, .35, .25), tier_idx + 1) THEN 'savings'
+      WHEN un < element_at(array(.90, .80, .50, .30), tier_idx + 1) THEN 'personal_loan'
+      WHEN un < element_at(array(.95, .90, .75, .55), tier_idx + 1) THEN 'mortgage'
+      ELSE 'investment' END AS need
+  FROM c
 )
-SELECT record_id, customer_id, offer_id, ts,
-       CAST(CASE WHEN (1.0/(1.0+exp(-logit))) > noise THEN 1 ELSE 0 END AS INT) AS accepted
-FROM scored
+SELECT record_id, customer_id, offer_id, ts, noise, need, tier_idx, risk_band, annual_income, tenure_months,
+       CASE WHEN ug < .6 THEN need
+            WHEN ug < .7 THEN element_at(array('credit_card','savings','personal_loan','mortgage','investment'), CAST(ug2*5 AS INT)+1)
+            ELSE 'none' END AS ctx_goal,
+       CASE WHEN uc < .8 THEN CASE risk_band WHEN 'low' THEN 'excellent' WHEN 'medium' THEN 'good' ELSE 'fair' END
+            ELSE element_at(array('excellent','good','fair'), CAST(uc2*3 AS INT)+1) END AS ctx_credit,
+       CAST(ROUND(annual_income*(0.85 + 0.3*ui)/5000)*5000 AS DOUBLE) AS ctx_income,
+       CAST(ROUND(annual_income/12*(0.05 + 0.15*us)/50)*50 AS DOUBLE) AS ctx_card_spend,
+       CASE WHEN uk < .5 THEN CAST(1 + uk*8 AS INT) ELSE 0 END AS n_intent  -- half get 1..4 events
+FROM n
+""")
+
+# In-session events in the 10 minutes before each impression (5..545 s earlier), 80% in the need category.
+EK = "concat(record_id, '_', CAST(i AS STRING))"
+spark.sql(f"""
+CREATE OR REPLACE TEMP VIEW label_session_events AS
+SELECT record_id,
+       concat('evt_l', substr(record_id, 5), '_', i) AS event_id, customer_id,
+       concat('sess_l', substr(record_id, 5)) AS session_id,
+       element_at(array('product_view','calculator_use','page_view','add_to_cart','search'),
+                  CAST({u('e_type', EK)}*5 AS INT)+1) AS event_type,
+       CASE WHEN {u('e_cat', EK)} < .8 THEN need
+            ELSE element_at(array('credit_card','savings','personal_loan','mortgage','investment'),
+                            CAST({u('e_cat2', EK)}*5 AS INT)+1) END AS product_category,
+       CAST(200 + {u('e_dwell', EK)}*44800 AS INT) AS dwell_ms,
+       element_at(array('ios','android','web'), CAST({u('e_dev', EK)}*3 AS INT)+1) AS device,
+       timestampadd(SECOND, -(5 + CAST({u('e_t', EK)}*540 AS INT)), ts) AS event_time
+FROM (SELECT *, explode(sequence(1, n_intent)) AS i FROM labels_ctx WHERE n_intent > 0)
+""")
+spark.sql("""
+INSERT INTO session_events
+SELECT event_id, customer_id, session_id, event_type, product_category, dwell_ms, device, event_time
+FROM label_session_events
+""")
+
+spark.sql(f"""
+CREATE OR REPLACE TABLE labels AS
+WITH j AS (
+  SELECT l.*, o.product_category AS cat, o.base_reward, o.tier_requirement,
+         COALESCE(k.k_cat, 0) AS k_cat, COALESCE(k.k_web, 0) AS k_web
+  FROM labels_ctx l
+  JOIN offers o ON l.offer_id = o.offer_id
+  LEFT JOIN (SELECT record_id, product_category, count(*) AS k_cat,
+                    count_if(device = 'web') AS k_web   -- clicks on the bank's website (this session)
+             FROM label_session_events GROUP BY 1, 2) k
+         ON k.record_id = l.record_id AND k.product_category = o.product_category
+),
+s AS (
+  SELECT *,
+    (-1.6 + base_reward/100.0*0.35
+     + element_at(map('credit_card', array(.5, .4, .2, .0), 'savings', array(.7, .4, .0, -.3),
+                      'personal_loan', array(.2, .5, .1, -.7), 'mortgage', array(-.8, .0, .5, .3),
+                      'investment', array(-1.0, -.3, .5, 1.1))[cat], tier_idx + 1)        -- tier x category
+     - 1.4*greatest(tier_requirement - (tier_idx + 1), 0)                                 -- below eligibility
+     + CASE WHEN cat IN ('personal_loan','mortgage') OR cat = 'credit_card'
+            THEN CASE ctx_credit
+              WHEN 'excellent' THEN .55*(tier_requirement - 1)                  -- premium credit products
+              WHEN 'good'      THEN CASE WHEN tier_requirement = 2 THEN .25 ELSE -.15*abs(tier_requirement - 2) END
+              ELSE .55 - 1.05*(tier_requirement - 1) END                       -- fair/building credit -> starter
+            ELSE 0 END                                                         -- request-time credit x offer tier
+     + CASE WHEN cat IN ('personal_loan','mortgage')
+            THEN CASE risk_band WHEN 'low' THEN .2 WHEN 'medium' THEN -.15 ELSE -.65 END ELSE 0 END
+     + CASE WHEN cat = 'credit_card' AND tier_requirement = 1                             -- starter card
+            THEN CASE ctx_credit WHEN 'fair' THEN 1.1 WHEN 'good' THEN .15 ELSE -.55 END - tenure_months/120.0*.35
+            ELSE 0 END
+     + CASE WHEN cat = 'credit_card'
+            THEN least(greatest((ctx_card_spend - 1750)/2500.0, -.9), 1.1)*(tier_requirement - 1)
+            ELSE 0 END                                                         -- spend x card tier
+     + CASE WHEN cat IN ('mortgage','investment','personal_loan')
+            THEN least(greatest((ctx_income - 85000)/75000.0, -1.0), 1.1)*(tier_requirement - 1)
+            ELSE 0 END                                                         -- stated income x offer tier
+     + CASE WHEN cat = 'mortgage'   THEN least(greatest((ctx_income - 95000)/60000.0, -1.2), 1.0) ELSE 0 END
+     + CASE WHEN cat = 'investment' THEN least(greatest((ctx_income - 80000)/90000.0, -1.0), .9) ELSE 0 END
+     + CASE WHEN cat IN ('investment','mortgage') THEN tenure_months/120.0*.5 ELSE 0 END
+     + CASE WHEN cat = 'savings' AND tier_requirement = 1 THEN (1 - tenure_months/120.0)*.4 ELSE 0 END
+     + CASE WHEN cat = need     THEN .6 ELSE 0 END                                        -- latent need
+     + CASE WHEN cat = ctx_goal THEN 2.2 ELSE 0 END                                       -- explicit stated goal: strongest signal
+     + .9*least(k_web, 4)                                                                 -- this website visit (request-time)
+     + .45*least(greatest(k_cat - k_web, 0), 4)                                           -- other channels (streaming)
+    ) AS logit
+  FROM j
+)
+SELECT record_id, customer_id, offer_id, ts, ctx_goal, ctx_credit, ctx_income, ctx_card_spend,
+       CAST(k_web AS INT) AS ctx_session_cat_views,
+       CAST(CASE WHEN (1.0/(1.0 + exp(-logit))) > noise THEN 1 ELSE 0 END AS INT) AS accepted
+FROM s
 """)
 
 # COMMAND ----------
@@ -169,3 +304,8 @@ FROM scored
 for t in ["customers", "offers", "transactions", "session_events", "labels"]:
     print(f"{t:16s} {spark.table(t).count():>12,}")
 display(spark.sql("SELECT round(avg(accepted),4) AS accept_rate FROM labels"))
+# Personalization check: acceptance by tier x category must vary (the old additive labels were flat).
+display(spark.sql("""
+SELECT c.loyalty_tier, o.product_category, round(avg(l.accepted), 3) AS accept_rate, count(*) AS n
+FROM labels l JOIN customers c USING (customer_id) JOIN offers o USING (offer_id)
+GROUP BY 1, 2 ORDER BY 1, 3 DESC"""))

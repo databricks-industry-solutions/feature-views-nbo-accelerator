@@ -29,6 +29,22 @@ variables:
       Route-optimized endpoints require a downscoped OAuth token that the app's own SP cannot mint,
       so the app uses this SP (which must have CAN_QUERY on the ranker endpoint) — same SP the feature-serving & feature-freshness benchmarks use.
     default: nbo
+  catalog:
+    description: Unity Catalog catalog the accelerator deployed into.
+    default: fins_industry_solutions
+  schema:
+    description: Schema the accelerator deployed into (nbo_<username> by default in the notebooks).
+    default: nbo
+  ranker_endpoint:
+    description: Route-optimized ranker (Part 2 nb09; falls back to Part 1's nbo-ranker-online if Part 2 is not deployed).
+    default: nbo-ranker-realtime
+  feature_endpoint:
+    description: Route-optimized Feature Serving endpoint over the nbo_customer_profile FeatureSpec (Part 2 nb10).
+    default: nbo-customer-features
+  traffic_job_id:
+    description: >-
+      Job id of "[NBO] Live traffic simulator" (resources/traffic_job.yml in the accelerator bundle). The app
+      starts/stops it for the "Simulate live traffic" button; the deploy grants the app CAN_MANAGE_RUN on it.
 
 resources:
   apps:
@@ -36,6 +52,20 @@ resources:
       name: ${var.app_name}
       description: 'Real-time Next-Best-Offer recommender + in-app AI assistant'
       source_code_path: ./
+      # Runtime config lives here (not app.yaml) so the schema and endpoint names are bundle variables.
+      config:
+        command: ['npm', 'run', 'start']
+        env:
+          - { name: DATABRICKS_WAREHOUSE_ID, value_from: sql-warehouse }
+          - { name: MODEL_MODE, value: 'fm' }
+          - { name: AGENT_MODEL, value: 'databricks-claude-sonnet-5' }
+          - { name: CATALOG, value: '${var.catalog}' }
+          - { name: SCHEMA, value: '${var.schema}' }
+          - { name: RANKER_ENDPOINT, value: '${var.ranker_endpoint}' }
+          - { name: FEATURE_ENDPOINT, value: '${var.feature_endpoint}' }
+          - { name: TRAFFIC_JOB_ID, value_from: traffic-job }
+          - { name: QUERY_SP_CLIENT_ID, value_from: query-sp-client-id }
+          - { name: QUERY_SP_CLIENT_SECRET, value_from: query-sp-client-secret }
       # sql: run_sql executes as the signed-in user (UC access per user).
       # serving.serving-endpoints: query the route-optimized ranker + call the assistant LLM.
       user_api_scopes:
@@ -48,6 +78,23 @@ resources:
             permission: CAN_USE
         # Query SP creds for route-optimized endpoint access (see query_sp_scope). Injected at
         # runtime from the secret scope; the deploy grants the app SP READ on these secrets.
+        # The app reads each endpoint's data-plane URL (needs View, included in CAN_QUERY).
+        - name: ranker-endpoint
+          serving_endpoint:
+            name: ${var.ranker_endpoint}
+            # /metrics (server-side latency histogram) is only populated for CAN_MANAGE in this
+            # workspace. The app uses it read-only to show warm model p95; query still uses the
+            # endpoint-downscoped query SP token.
+            permission: CAN_MANAGE
+        - name: feature-endpoint
+          serving_endpoint:
+            name: ${var.feature_endpoint}
+            permission: CAN_QUERY
+        # "Simulate live traffic" button: the app SP may run/cancel this job (nothing else).
+        - name: traffic-job
+          job:
+            id: ${var.traffic_job_id}
+            permission: CAN_MANAGE_RUN
         - name: query-sp-client-id
           secret:
             scope: ${var.query_sp_scope}

@@ -24,11 +24,11 @@
 # MAGIC   *after* this notebook, or supply a `StreamBackfillSource` for history).
 # MAGIC - Column refs are prefixed with **`value.`** (Kafka payload); the JSON Schema declares
 # MAGIC   `event_time` as `{"type": "string", "format": "date-time"}` so the timeseries column is TIMESTAMP.
-# MAGIC - Streaming features support **`RollingWindow` only** (no Sliding/Tumbling) and materialize
-# MAGIC   **online-only** with `StreamingMode()`.
+# MAGIC - Streaming features support **`RollingWindow`** and **`SawtoothWindow`** (Beta, windows > 2 days)
+# MAGIC   and materialize **online-only** with `StreamingMode()`.
 
 # COMMAND ----------
-# MAGIC %pip install "databricks-feature-engineering>=0.16.0"
+# MAGIC %pip install "databricks-feature-engineering>=0.18.0"
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -53,7 +53,7 @@ from databricks.feature_engineering.entities import (
     KafkaStreamConfig, KafkaSubscriptionMode, StreamConnectionConfig,
     DirectSchemas, SchemaConfig, IngestionConfig, IngestionDestination,
     StreamSource, Feature, AggregationFunction, Count, RollingWindow,
-    OnlineStoreConfig, StreamingMode,
+    OnlineStoreConfig, OfflineStoreConfig, StreamingMode,
 )
 fe = FeatureEngineeringClient()
 
@@ -152,6 +152,57 @@ except Exception:
     )
     print("Created streaming feature cust_clicks_10m.")
 
+# Per-category intent, keyed on (customer_id, product_category). At serving, each request row already
+# carries both keys (product_category is a request column), so every offer row gets "how many times did
+# this visitor touch THIS category in the last 10 minutes". This is the feature that makes the ranking
+# react to a click: browse mortgages and the mortgage rows' scores move, the others don't.
+CAT_KEYS = ["value.customer_id", "value.product_category"]
+try:
+    cat_views_10m = fe.get_feature(full_name=f"{catalog}.{schema}.cust_cat_views_10m")
+except Exception:
+    cat_views_10m = fe.create_feature(
+        name="cust_cat_views_10m", source=stream_source, entity=CAT_KEYS,
+        timeseries_column="value.event_time",
+        function=AggregationFunction(operator=Count(input="value.event_id"),
+                                     time_window=RollingWindow(window_duration=timedelta(minutes=10))),
+        catalog_name=catalog, schema_name=schema)
+    print("Created streaming feature cust_cat_views_10m.")
+
+# Mobile-app activity only (cross-channel signal). Website clicks are the visitor's own session, which the
+# bank's site already knows and sends as a request-time feature (ctx_session_cat_views), so this streaming
+# feature counts only the OTHER channels. A source-level filter narrows what the window aggregates.
+mobile_source = StreamSource(full_name=STREAM_NAME, filter_condition="value.device <> 'web'")
+try:
+    mobile_cat_views_10m = fe.get_feature(full_name=f"{catalog}.{schema}.cust_mobile_cat_views_10m")
+except Exception:
+    mobile_cat_views_10m = fe.create_feature(
+        name="cust_mobile_cat_views_10m", source=mobile_source, entity=CAT_KEYS,
+        timeseries_column="value.event_time",
+        function=AggregationFunction(operator=Count(input="value.event_id"),
+                                     time_window=RollingWindow(window_duration=timedelta(minutes=10))),
+        catalog_name=catalog, schema_name=schema)
+    print("Created streaming feature cust_mobile_cat_views_10m.")
+
+# Long-window interest on the SAME stream with a SawtoothWindow (Beta): 30-day count, fresh at the leading
+# edge, but only ~2 days of live streaming state (older history comes from the compacted ingestion table).
+# StreamSource only, window must be > 2 days, and it serves ~2 days after materialization. Shown in the
+# app's profile panel via the Feature Serving endpoint; the ranker does not depend on it.
+cat_views_30d = None
+try:
+    from databricks.feature_engineering.entities import SawtoothWindow
+    try:
+        cat_views_30d = fe.get_feature(full_name=f"{catalog}.{schema}.cust_cat_views_30d")
+    except Exception:
+        cat_views_30d = fe.create_feature(
+            name="cust_cat_views_30d", source=stream_source, entity=CAT_KEYS,
+            timeseries_column="value.event_time",
+            function=AggregationFunction(operator=Count(input="value.event_id"),
+                                         time_window=SawtoothWindow(window_duration=timedelta(days=30))),
+            catalog_name=catalog, schema_name=schema)
+        print("Created Sawtooth feature cust_cat_views_30d.")
+except ImportError:
+    print("SawtoothWindow not available in this databricks-feature-engineering version; skipping cust_cat_views_30d.")
+
 # COMMAND ----------
 # MAGIC %md ## 3 · Materialize online-only with StreamingMode
 # MAGIC Streaming features are online-only; `StreamingMode()` runs the continuous materialization
@@ -179,20 +230,38 @@ if batch_stores and batch_stores != {osn}:
         f"pass online_store_name={list(batch_stores)[0]} here."
     )
 
-# Idempotent: only materialize if not already materialized online (re-runnable notebook).
-already = [m for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.cust_clicks_10m") if m.is_online]
-if already:
-    print(f"cust_clicks_10m already materialized online -> {already[0].table_name}")
-else:
-    fe.materialize_features(
-        features=[clicks_10m],
-        online_config=OnlineStoreConfig(
-            catalog_name=catalog, schema_name=schema,
-            table_name_prefix="nbostream", online_store_name=osn,
-        ),
-        trigger=StreamingMode(),
-    )
-    print("Materialized cust_clicks_10m online with StreamingMode.")
+# Idempotent: only materialize features that are not already materialized online (re-runnable notebook).
+# Each streaming feature gets its own materialize call so a Beta failure (Sawtooth) can't block the others.
+for feat, name in [(clicks_10m, "cust_clicks_10m"), (cat_views_10m, "cust_cat_views_10m"),
+                   (mobile_cat_views_10m, "cust_mobile_cat_views_10m"), (cat_views_30d, "cust_cat_views_30d")]:
+    if feat is None:
+        continue
+    already = [m for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.{name}") if m.is_online]
+    if already:
+        print(f"{name} already materialized online -> {already[0].table_name}")
+        continue
+    # A SawtoothWindow also needs an OFFLINE destination: the older part of its window is read from
+    # compacted offline output, only the newest ~2 days come from the live stream.
+    extra = {}
+    if name == "cust_cat_views_30d":
+        extra["offline_config"] = OfflineStoreConfig(catalog_name=catalog, schema_name=schema,
+                                                     table_name_prefix="nbostream_off")
+    try:
+        fe.materialize_features(
+            features=[feat],
+            online_config=OnlineStoreConfig(
+                catalog_name=catalog, schema_name=schema,
+                table_name_prefix="nbostream", online_store_name=osn,
+            ),
+            trigger=StreamingMode(),
+            **extra,
+        )
+        print(f"Materialized {name} online with StreamingMode.")
+    except Exception as e:
+        if name == "cust_cat_views_30d":  # Beta: report and continue; nothing downstream requires it
+            print(f"WARNING: could not materialize {name} (Sawtooth, Beta): {type(e).__name__}: {e}")
+        else:
+            raise
 
 # COMMAND ----------
 # MAGIC %md ## 4 · Block until the ingestion pipeline is RUNNING (gate before producing)

@@ -16,7 +16,7 @@
 # MAGIC (thousands of products); that variant is deliberately out of scope here (see README).
 
 # COMMAND ----------
-# MAGIC %pip install "databricks-feature-engineering>=0.16.0" lightgbm scikit-learn mlflow
+# MAGIC %pip install "databricks-feature-engineering>=0.18.0" lightgbm scikit-learn mlflow
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -70,8 +70,16 @@ fe = FeatureEngineeringClient()
 def gf(n):
     return fe.get_feature(full_name=f"{catalog}.{schema}.{n}")
 
-cust_feats = [gf(n) for n in ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
-                              "cust_loyalty_tier", "cust_risk_band", "cust_clicks_10m"]]
+# 7 batch features (as nb05) + 2 streaming: total clicks, and mobile-app activity in the offer's own
+# category. The per-category feature is keyed on (customer_id, product_category); product_category is
+# already a request column, so each offer row looks up its own category count. Website clicks in this
+# session come in the request instead (ctx_session_cat_views), so the two signals never overlap.
+# Keep latest customer attributes and the category-specific streaming signal. Batch-window features
+# remain served by the Feature Serving endpoint and CustomUDF, but their ranker importance is too low
+# to justify another Lakebase table fetch on the sub-20ms serving path.
+CUST = ["cust_loyalty_tier", "cust_risk_band",
+        "cust_annual_income", "cust_tenure_months", "cust_mobile_cat_views_10m"]
+cust_feats = [gf(n) for n in CUST]
 
 # Request-time offer columns (RequestSource + passthrough ColumnSelection; name == column name).
 req = RequestSource(schema=[
@@ -79,6 +87,13 @@ req = RequestSource(schema=[
     FieldDefinition(name="product_category", data_type=ScalarDataType.STRING),
     FieldDefinition(name="base_reward", data_type=ScalarDataType.DOUBLE),
     FieldDefinition(name="tier_requirement", data_type=ScalarDataType.INTEGER),
+    FieldDefinition(name="ctx_goal", data_type=ScalarDataType.STRING),
+    FieldDefinition(name="ctx_credit", data_type=ScalarDataType.STRING),
+    FieldDefinition(name="ctx_income", data_type=ScalarDataType.DOUBLE),
+    FieldDefinition(name="ctx_card_spend", data_type=ScalarDataType.DOUBLE),
+    # Website clicks in this offer's category during the visitor's session (last 10 min). The app counts
+    # them and sends one value per offer row, so a click re-ranks on the very next request.
+    FieldDefinition(name="ctx_session_cat_views", data_type=ScalarDataType.INTEGER),
 ])
 
 def get_or_create_req(colname):
@@ -88,8 +103,9 @@ def get_or_create_req(colname):
         return fe.create_feature(source=req, function=ColumnSelection(column=colname),
                                  catalog_name=catalog, schema_name=schema, name=colname)
 
-offer_feats = [get_or_create_req(c) for c in
-               ["offer_id", "product_category", "base_reward", "tier_requirement"]]
+REQ = ["offer_id", "product_category", "base_reward", "tier_requirement",
+       "ctx_goal", "ctx_credit", "ctx_income", "ctx_card_spend", "ctx_session_cat_views"]
+offer_feats = [get_or_create_req(c) for c in REQ]
 
 # COMMAND ----------
 # MAGIC %md ## Point-in-time training set + train
@@ -100,6 +116,19 @@ offer_feats = [get_or_create_req(c) for c in
 # requires BOTH timestamp keys present on the label df for point-in-time joins, so provide each from the
 # label `ts` (they all mean "as of the label event time" here). Missing `event_time` is what raised
 # "Training DataFrame is missing timestamp key required for join: event_time".
+# Wait for the replayed label-session history (nb08 mode=replay) to reach the ingestion table; training
+# before it lands would see the streaming features = 0 for every label.
+import time
+INGEST = f"`{catalog}`.{schema}.session_events_ingest"
+expected = spark.sql(f"SELECT count(*) FROM `{catalog}`.{schema}.session_events WHERE event_id LIKE 'evt_l%'").first()[0]
+deadline = time.time() + 20 * 60
+while True:
+    got = spark.sql(f"SELECT count(DISTINCT value.event_id) FROM {INGEST} WHERE value.event_id LIKE 'evt_l%'").first()[0]
+    print(f"replayed label-session events ingested: {got:,} / {expected:,}")
+    if got >= 0.98 * expected or time.time() > deadline:
+        break
+    time.sleep(30)
+
 labels = (spark.table(f"`{catalog}`.{schema}.labels")
           .withColumn("updated_at", F.col("ts"))
           .withColumn("event_time", F.col("ts")))
@@ -113,9 +142,10 @@ ts = fe.create_training_set(
 )
 tdf = ts.load_df().toPandas()
 
-CAT = ["offer_id", "product_category", "cust_loyalty_tier", "cust_risk_band"]
-NUM = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
-       "cust_clicks_10m", "base_reward", "tier_requirement"]
+# offer_id is an identifier, not a preference signal. Encoding it made one arbitrary offer dominate.
+CAT = ["product_category", "cust_loyalty_tier", "cust_risk_band", "ctx_goal", "ctx_credit"]
+NUM = ["cust_annual_income", "cust_tenure_months",
+       "cust_mobile_cat_views_10m", "base_reward", "tier_requirement", "ctx_income", "ctx_card_spend", "ctx_session_cat_views"]
 X = tdf[CAT + NUM].copy()
 for c in CAT:
     X[c] = X[c].astype(str)
@@ -139,7 +169,18 @@ model = Pipeline([
                       subsample=0.8, colsample_bytree=0.8, random_state=42)),
 ])
 model.fit(Xtr, ytr)
-print("val_auc:", roc_auc_score(yte, model.predict_proba(Xte)[:, 1]))
+val_auc = roc_auc_score(yte, model.predict_proba(Xte)[:, 1])
+print("val_auc:", round(val_auc, 4))
+# The in-session feature must carry signal: labels in nb01 get session events in the 10 minutes before
+# `ts`, replayed into Kafka with their original event_time (nb08 replay mode). If the ingestion table only
+# holds live events (event_time = now), every label sees 0 here and the ranker can't react to clicks.
+nz = (pd.to_numeric(tdf["cust_mobile_cat_views_10m"], errors="coerce").fillna(0) > 0).mean()
+nw = (pd.to_numeric(tdf["ctx_session_cat_views"], errors="coerce").fillna(0) > 0).mean()
+print(f"labels with mobile category views > 0: {nz:.1%} | with website session views > 0: {nw:.1%}")
+assert nz > 0.03, ("cust_mobile_cat_views_10m is ~0 for all labels: replay the label session events into Kafka "
+                   "with their original event_time (notebook 08, mode=replay) before training.")
+imp = dict(zip(CAT + NUM, model.named_steps["clf"].feature_importances_))
+print("feature importance (split count):", dict(sorted(imp.items(), key=lambda kv: -kv[1])))
 
 # COMMAND ----------
 # MAGIC %md ## Log with feature metadata → register → deploy route-optimized
@@ -181,7 +222,7 @@ ENDPOINT, SERVED = dbutils.widgets.get("ranker_endpoint"), "nbo-realtime-ro"
 # choice). Trade-off: after idle it scales to zero and the next request pays a cold start, so warm
 # the endpoint before measuring latency (the feature-freshness benchmark) or demoing.
 served = [ServedEntityInput(name=SERVED, entity_name=MODEL, entity_version=newest.version,
-                            workload_size="Small", scale_to_zero_enabled=True)]
+                            workload_size="Small", scale_to_zero_enabled=False)]
 if ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
     w.serving_endpoints.update_config(name=ENDPOINT, served_entities=served)
 else:
@@ -226,7 +267,7 @@ else:
 
 # COMMAND ----------
 # MAGIC %md ## Rank-all serving — request carries only customer_id + offer fields
-# MAGIC The endpoint looks up all 6 customer features (incl. the live `cust_clicks_10m`) online.
+# MAGIC The endpoint looks up all 9 customer features (incl. the live streaming features) online.
 # MAGIC
 # MAGIC **Auth note:** this is a *route-optimized* endpoint. It accepts **only** an OAuth token
 # MAGIC downscoped to the endpoint (`authorization_details`) — **not** a PAT and **not** a job/notebook
@@ -241,7 +282,10 @@ def _rank_all(customer_id):
     offers = spark.table(f"`{catalog}`.{schema}.offers").collect()
     recs = [{"customer_id": customer_id, "offer_id": o.offer_id,
              "product_category": o.product_category, "base_reward": float(o.base_reward),
-             "tier_requirement": int(o.tier_requirement)} for o in offers]
+             "tier_requirement": int(o.tier_requirement),
+             "ctx_goal": "none", "ctx_credit": "good", "ctx_income": 85000.0, "ctx_card_spend": 1500.0,
+             "ctx_session_cat_views": 0}
+            for o in offers]
     return w.serving_endpoints_data_plane.query(
         name=ENDPOINT, dataframe_records=recs).predictions
 

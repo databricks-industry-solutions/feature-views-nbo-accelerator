@@ -45,13 +45,19 @@ def gf(name):
     return fe.get_feature(full_name=f"{catalog}.{schema}.{name}")
 
 agg_features = [gf("cust_avg_balance_30d"), gf("cust_spend_90d"), gf("cust_txn_count_7d")]
-attr_features = [gf("cust_loyalty_tier"), gf("cust_risk_band")]
+ATTR = ["cust_loyalty_tier", "cust_risk_band", "cust_annual_income", "cust_tenure_months"]
+attr_features = [gf(n) for n in ATTR]
 
-def already_materialized(feature_name: str) -> bool:
-    """Re-run guard: materialize_features is not idempotent, so skip features that already
-    have a materialization pipeline provisioned."""
-    return len(list(fe.list_materialized_features(
-        feature_name=f"{catalog}.{schema}.{feature_name}"))) > 0
+def already_materialized(feature_name: str, online: bool = False) -> bool:
+    """Re-run guard: materialize_features is not idempotent, so skip features that already have a
+    materialization pipeline. With online=True, only an online materialization in THIS store (osn)
+    counts: a model's features must all live in one online store, so one materialized into a
+    different store does not satisfy it."""
+    ms = list(fe.list_materialized_features(feature_name=f"{catalog}.{schema}.{feature_name}"))
+    if not online:
+        return len(ms) > 0
+    return any(m.is_online and getattr(getattr(m, "online_store_config", None), "online_store_name", None) == osn
+               for m in ms)
 
 # COMMAND ----------
 # MAGIC %md ## Aggregation features → offline Delta + online Lakebase (CronSchedule + backfill)
@@ -69,11 +75,15 @@ else:
 # COMMAND ----------
 # MAGIC %md ## ColumnSelection features → online-only (TableTrigger)
 # COMMAND ----------
-if all(already_materialized(f) for f in ["cust_loyalty_tier", "cust_risk_band"]):
-    print("Attribute features already materialized — skipping.")
+# Per-feature guard: an existing deployment already has tier/risk materialized, and the income/tenure
+# features were added later, so only materialize the ones that are missing.
+todo = [f for n, f in zip(ATTR, attr_features) if not already_materialized(n, online=True)]
+if not todo:
+    print(f"Attribute features already materialized in online store '{osn}' — skipping.")
 else:
+    print(f"Materializing into '{osn}':", [n for n in ATTR if not already_materialized(n, online=True)])
     fe.materialize_features(
-        features=attr_features,
+        features=todo,
         online_config=OnlineStoreConfig(catalog, schema, "nbo_on", osn),
         trigger=TableTrigger(),
     )
@@ -89,8 +99,7 @@ else:
 # COMMAND ----------
 import time
 
-FEATS = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d",
-         "cust_loyalty_tier", "cust_risk_band"]
+FEATS = ["cust_avg_balance_30d", "cust_spend_90d", "cust_txn_count_7d"] + ATTR
 online_tables = set()
 for f in FEATS:
     for m in fe.list_materialized_features(feature_name=f"{catalog}.{schema}.{f}"):

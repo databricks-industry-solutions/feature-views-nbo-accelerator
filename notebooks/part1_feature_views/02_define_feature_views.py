@@ -9,7 +9,7 @@
 # MAGIC |---|---|---|
 # MAGIC | Batch, overlapping | `SlidingWindow` | 30-day avg balance, 7-day txn count |
 # MAGIC | Batch, fixed bucket | `TumblingWindow` | 90-day total spend |
-# MAGIC | Latest attribute | `ColumnSelection` | loyalty tier, risk band |
+# MAGIC | Latest attribute | `ColumnSelection` | loyalty tier, risk band, income, tenure |
 # MAGIC
 # MAGIC Streaming in-session features (`RollingWindow` over MSK) are a Part 2 concern, added once the
 # MAGIC Kafka stream is registered — see notebook 07 (currently gated; read its preflight cell) and the
@@ -99,12 +99,22 @@ risk_band = get_or_create_feature(
     source=cust_source, entity=["customer_id"], timeseries_column="updated_at",
     function=ColumnSelection(column="risk_band"),
 )
+annual_income = get_or_create_feature(
+    "cust_annual_income",
+    source=cust_source, entity=["customer_id"], timeseries_column="updated_at",
+    function=ColumnSelection(column="annual_income"),
+)
+tenure_months = get_or_create_feature(
+    "cust_tenure_months",
+    source=cust_source, entity=["customer_id"], timeseries_column="updated_at",
+    function=ColumnSelection(column="tenure_months"),
+)
 
 # COMMAND ----------
 # MAGIC %md ## Validate — `compute_features` previews values (no persistence, no lineage)
 # COMMAND ----------
 agg_features = [avg_balance_30d, spend_90d, txn_count_7d]
-attr_features = [loyalty_tier, risk_band]
+attr_features = [loyalty_tier, risk_band, annual_income, tenure_months]
 
 preview = fe.compute_features(features=agg_features)
 preview.show(5, truncate=False)

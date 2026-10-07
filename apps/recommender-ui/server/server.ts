@@ -1,4 +1,6 @@
 import { createApp, analytics, server } from '@databricks/appkit';
+import { metrics, trafficStatus, trafficStart, trafficEnsure, trafficStop, type LiveCfg } from './realtime.js';
+import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
 // ---------------------------------------------------------------------------
 // In-app FP&A agent. The agent loop runs HERE, in the app's own server (no
@@ -30,7 +32,14 @@ const CATALOG = process.env.CATALOG ?? 'fins_industry_solutions';
 const SCHEMA = process.env.SCHEMA ?? 'nbo';
 // Route-optimized online-lookup ranker: request carries customer_id + offer fields; the endpoint
 // fetches the customer's features from the online store by key and returns P(accept) per offer.
-const RANKER_ENDPOINT = process.env.RANKER_ENDPOINT ?? 'nbo-ranker-online';
+const RANKER_ENDPOINT = process.env.RANKER_ENDPOINT ?? 'nbo-ranker-realtime';
+// Feature Serving endpoint over the nbo_customer_profile FeatureSpec (notebook 10): the visitor's stored,
+// streaming (Rolling + Sawtooth), and CustomUDF features, used for the "signals behind this match" panel
+// and to measure streaming freshness.
+const FEATURE_ENDPOINT = process.env.FEATURE_ENDPOINT ?? 'nbo-customer-features';
+// "Simulate live traffic": the notebook 08 continuous Kafka producer, bound to the app as a job resource.
+const TRAFFIC_JOB_ID = process.env.TRAFFIC_JOB_ID ?? '';
+const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
 const FQ = `\`${CATALOG}\`.${SCHEMA}`;
 
 const SYSTEM = `You are the Next-Best-Offer assistant for a retail bank, embedded in a
@@ -192,12 +201,11 @@ async function queryRows(statement: string, token: string): Promise<Record<strin
 // Endpoint-downscoped query tokens are reusable until they expire, so cache per endpoint id and
 // reuse (with a 60s safety margin) instead of minting a fresh one on every /api/recommend — the
 // mint is a synchronous OAuth round-trip on this app's advertised sub-300ms hot path.
-let cachedQueryToken: { id: string; token: string; exp: number } | null = null;
+const queryTokens = new Map<string, { token: string; exp: number }>();
 async function mintQueryToken(endpointId: string): Promise<string> {
   const now = Date.now();
-  if (cachedQueryToken && cachedQueryToken.id === endpointId && cachedQueryToken.exp > now + 60_000) {
-    return cachedQueryToken.token;
-  }
+  const hit = queryTokens.get(endpointId);
+  if (hit && hit.exp > now + 60_000) return hit.token;
   // Prefer a dedicated query SP (QUERY_SP_CLIENT_ID/SECRET, injected from the `nbo` secret scope).
   // Databricks App service principals are not permitted to use the authorization_details
   // downscoping flow that route-optimized endpoints require, so the app's own SP creds don't work
@@ -221,29 +229,195 @@ async function mintQueryToken(endpointId: string): Promise<string> {
   });
   if (!r.ok) throw new Error(`downscoped token mint failed: ${r.status} ${(await r.text()).slice(0, 300)}`);
   const j = (await r.json()) as { access_token: string; expires_in?: number };
-  cachedQueryToken = { id: endpointId, token: j.access_token, exp: now + (j.expires_in ?? 3600) * 1000 };
+  queryTokens.set(endpointId, { token: j.access_token, exp: now + (j.expires_in ?? 3600) * 1000 });
   return j.access_token;
 }
 
 // Drop the cached downscoped token so the next mintQueryToken() re-mints. Call after a 401/403 from
 // the ranker (e.g. the SP's CAN_QUERY grant was revoked, or the token was server-side invalidated)
 // so a stale cached token doesn't keep the app broken until its natural expiry.
-function invalidateQueryToken(): void {
-  cachedQueryToken = null;
+function invalidateQueryToken(endpointId: string): void {
+  queryTokens.delete(endpointId);
 }
 
 interface EndpointInfo { url: string; id: string }
-let cachedEp: EndpointInfo | null = null;
-async function getRankerEndpoint(token: string): Promise<EndpointInfo> {
-  if (cachedEp) return cachedEp;
-  const r = await fetch(`${HOST}/api/2.0/serving-endpoints/${RANKER_ENDPOINT}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error(`get endpoint ${RANKER_ENDPOINT} failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
+// Resolved on every use, never cached: the endpoint id and data-plane URL both change when an
+// endpoint is recreated, and a stale value would route every later call to a dead URL.
+async function getEndpoint(name: string, token: string): Promise<EndpointInfo> {
+  const r = await fetch(`${HOST}/api/2.0/serving-endpoints/${name}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`get endpoint ${name} failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
   const d = (await r.json()) as { id?: string; data_plane_info?: { query_info?: { endpoint_url?: string } } };
   const url = d.data_plane_info?.query_info?.endpoint_url;
-  if (!url || !d.id) throw new Error(`endpoint ${RANKER_ENDPOINT} is not route-optimized (no data-plane query URL).`);
-  cachedEp = { url, id: d.id };
-  return cachedEp;
+  if (!url || !d.id) throw new Error(`endpoint ${name} is not route-optimized (no data-plane query URL).`);
+  return { url, id: d.id };
 }
+
+// Query a route-optimized endpoint. The token mint and endpoint lookup happen BEFORE the timer, so
+// latency_ms is only the data-plane round trip. On 401/403 the cached token is re-minted once.
+async function queryEndpoint(name: string, records: Record<string, unknown>[]): Promise<{ json: Record<string, unknown>; latencyMs: number }> {
+  const ep = await getEndpoint(name, await getToken());
+  const body = JSON.stringify({ dataframe_records: records });
+  const post = (t: string) => fetch(ep.url, { method: 'POST', headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' }, body });
+  let token = await mintQueryToken(ep.id);
+  let t0 = Date.now();
+  let r = await post(token);
+  if (r.status === 401 || r.status === 403) {
+    invalidateQueryToken(ep.id);
+    token = await mintQueryToken(ep.id);
+    t0 = Date.now();
+    r = await post(token);
+  }
+  // After an idle period the endpoint's feature-lookup client can reuse Lakebase connections the server already
+  // closed ("SSL error: unexpected eof" / "connection is lost"); each serving worker fails once, then reconnects.
+  // Retry only that transient error, up to twice, and report the latency of the call that succeeded.
+  for (let attempt = 0; r.status === 400 && attempt < 2; attempt += 1) {
+    const text = await r.clone().text();
+    if (!/SSL error|connection is lost|server closed the connection/i.test(text)) break;
+    console.warn(`[${name}] transient lookup connection error, retrying (${attempt + 1}/2)`);
+    t0 = Date.now();
+    r = await post(token);
+  }
+  const latencyMs = Date.now() - t0;
+  if (!r.ok) throw new Error(`${name} query failed: ${r.status} ${(await r.text()).slice(0, 300)}`);
+  return { json: (await r.json()) as Record<string, unknown>, latencyMs };
+}
+
+
+// Visitor id: signed-in visitors use their customer_id; guests get a stable id per browser session,
+// so their clicks still build streaming features (keyed by that id) that the ranker looks up.
+const visitorId = (customerId: unknown, sessionId: unknown) =>
+  customerId ? String(customerId) : `guest_${String(sessionId ?? 'anon').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}`;
+
+// OfferMatch answers + the visitor's website clicks per category in the last 10 minutes of this session.
+interface Ctx {
+  goal?: string;
+  credit?: string;
+  income?: number;
+  card_spend?: number;
+  credit_monthly_spend?: number;
+  savings_deposit?: number;
+  loan_amount?: number;
+  loan_term_months?: number;
+  home_price?: number;
+  mortgage_down_payment_pct?: number;
+  investment_amount?: number;
+  investment_monthly_contribution?: number;
+  session_cat_views?: Record<string, number>;
+}
+const ctxColumns = (c: Ctx = {}) => ({
+  ctx_goal: CATEGORIES.includes(String(c.goal)) ? String(c.goal) : 'none',
+  ctx_credit: ['excellent', 'good', 'fair'].includes(String(c.credit)) ? String(c.credit) : 'good',
+  ctx_income: Number.isFinite(Number(c.income)) && Number(c.income) > 0 ? Number(c.income) : 85000,
+  ctx_card_spend: Number.isFinite(Number(c.card_spend)) && Number(c.card_spend) >= 0 ? Number(c.card_spend) : 1500,
+});
+
+// Offer catalog is static demo data: cache it briefly so the hot path is one endpoint call.
+interface OfferRow extends Record<string, unknown> {
+  offer_id: unknown;
+  product_category: unknown;
+  offer_text: unknown;
+  base_reward: unknown;
+  tier_requirement: unknown;
+}
+let offersCache: { rows: OfferRow[]; exp: number } | null = null;
+async function getOffers(token: string): Promise<OfferRow[]> {
+  if (offersCache && offersCache.exp > Date.now()) return offersCache.rows;
+  const rows = (await queryRows(
+    `SELECT offer_id, product_category, offer_text, base_reward, tier_requirement FROM ${FQ}.offers ORDER BY offer_id`,
+    token,
+  )) as OfferRow[];
+  offersCache = { rows, exp: Date.now() + 5 * 60_000 };
+  return rows;
+}
+
+async function rankAll(customerId: string, ctx: Ctx, token: string) {
+  const cc = ctxColumns(ctx);
+  const allOffers = await getOffers(token);
+  // OfferMatch is a product-intent form, not a weak preference hint. If a visitor explicitly asks
+  // for a mortgage, recommending a credit card is semantically wrong. Constrain candidates to the
+  // selected category, then let the model personalize WHICH product in that category is best.
+  // With no selected goal the full catalog remains eligible.
+  const { offers: goalOffers, requestedGoal } = constrainOffersForGoal(allOffers, cc.ctx_goal);
+  const views = ctx.session_cat_views ?? {};
+  // ctx_session_cat_views is per offer row: the visitor's clicks in THAT offer's category, so a click on
+  // mortgages moves only the mortgage rows.
+  const sessionViews = (cat: unknown) => {
+    const v = Math.floor(Number(views[String(cat)] ?? 0));
+    return Number.isFinite(v) && v > 0 ? Math.min(v, 50) : 0;
+  };
+  const records = allOffers.map((o) => ({
+    customer_id: customerId, offer_id: o.offer_id, product_category: o.product_category,
+    base_reward: Number(o.base_reward), tier_requirement: Number(o.tier_requirement), ...cc,
+    ctx_session_cat_views: sessionViews(o.product_category),
+  }));
+  const { json, latencyMs } = await queryEndpoint(RANKER_ENDPOINT, records);
+  const preds = json.predictions;
+  // Expect a flat numeric array aligned 1:1 with offers; anything else would silently mis-sort.
+  const nums = Array.isArray(preds) ? preds.map(Number) : [];
+  if (nums.length !== allOffers.length || nums.some((n) => !Number.isFinite(n))) {
+    throw new Error(`ranker returned an unexpected predictions shape: expected ${allOffers.length} numeric scores, got ${JSON.stringify(preds).slice(0, 200)}`);
+  }
+  const scoredAll = allOffers.map((o, i) => ({ ...o, score: nums[i] }) as OfferRow & { score: number })
+    .sort((a, b) => b.score - a.score);
+  const goalIds = new Set(goalOffers.map((o) => String(o.offer_id)));
+  const scoredGoal = scoredAll.filter((o) => goalIds.has(String(o.offer_id)));
+  const scored = constrainOffersForContext(scoredGoal, {
+    credit: cc.ctx_credit as 'excellent' | 'good' | 'fair',
+    income: cc.ctx_income,
+    card_spend: cc.ctx_card_spend,
+    credit_monthly_spend: ctx.credit_monthly_spend,
+    savings_deposit: ctx.savings_deposit,
+    loan_amount: ctx.loan_amount,
+    loan_term_months: ctx.loan_term_months,
+    home_price: ctx.home_price,
+    mortgage_down_payment_pct: ctx.mortgage_down_payment_pct,
+    investment_amount: ctx.investment_amount,
+    investment_monthly_contribution: ctx.investment_monthly_contribution,
+  });
+  assertRecommendationGoal(scored[0]?.product_category, requestedGoal);
+  return { scored, latencyMs };
+}
+
+// One Feature Serving lookup: a row per category, so category-keyed features come back per row.
+async function lookupProfile(customerId: string) {
+  const { json, latencyMs } = await queryEndpoint(FEATURE_ENDPOINT, CATEGORIES.map((c) => ({ customer_id: customerId, product_category: c })));
+  const rows = (Array.isArray(json.outputs) ? json.outputs : Array.isArray(json.predictions) ? json.predictions : []) as Record<string, unknown>[];
+  const num = (v: unknown) => (v === null || v === undefined || Number.isNaN(Number(v)) ? undefined : Number(v));
+  const first = rows[0] ?? {};
+  const customer: Record<string, unknown> = {};
+  for (const k of ['cust_loyalty_tier', 'cust_risk_band']) if (first[k] != null) customer[k] = first[k];
+  for (const k of ['cust_annual_income', 'cust_tenure_months', 'cust_spend_90d', 'cust_avg_balance_30d', 'cust_spend_to_income', 'cust_clicks_10m']) {
+    const v = num(first[k]); if (v !== undefined) customer[k] = v;
+  }
+  const categories: Record<string, { cust_mobile_cat_views_10m?: number; cust_cat_views_30d?: number }> = {};
+  CATEGORIES.forEach((c, i) => {
+    const r = rows[i] ?? {};
+    categories[c] = { cust_mobile_cat_views_10m: num(r.cust_mobile_cat_views_10m) ?? 0, cust_cat_views_30d: num(r.cust_cat_views_30d) };
+  });
+  return { customer, categories, latencyMs };
+}
+
+// Jobs API calls run as the app's service principal (granted CAN_MANAGE_RUN on the traffic job through the
+// app resource binding). Stream-stats SQL runs as the signed-in user when a forwarded token is present.
+const liveCfg = (userToken?: string): LiveCfg => ({
+  host: HOST, fq: FQ, catalog: CATALOG, schema: SCHEMA, rankerEndpoint: RANKER_ENDPOINT,
+  trafficJobId: TRAFFIC_JOB_ID,
+  getToken,
+  query: async (sql: string) => queryRows(sql, userToken ?? (await getToken())),
+});
+
+// Demo accounts: real customers nearest to four archetypes (tier + risk exact, income/tenure closest).
+const ARCHETYPES = [
+  { key: 'maya', tier: 'bronze', risk: 'high', income: 48000, tenure: 6 },
+  { key: 'raj', tier: 'gold', risk: 'low', income: 145000, tenure: 54 },
+  { key: 'elena', tier: 'platinum', risk: 'low', income: 210000, tenure: 117 },
+  { key: 'sam', tier: 'silver', risk: 'medium', income: 72000, tenure: 27 },
+];
+let accountsCache: Record<string, unknown>[] | null = null;
+let pingCustomers: string[] = [];
+let pingIndex = 0;
+let latencyTestSession = 0;
+let latencyTestRunning = false;
 
 async function callModel(messages: unknown[], system: string): Promise<Response> {
   const token = await getToken();
@@ -275,7 +449,7 @@ createApp({
     appkit.server.extend((app) => {
       // Lightweight config for the UI header (catalog/schema the app is pointed at).
       app.get('/api/config', (_req, res) => {
-        res.json({ catalog: CATALOG, schema: SCHEMA, ranker_endpoint: RANKER_ENDPOINT });
+        res.json({ catalog: CATALOG, schema: SCHEMA, ranker_endpoint: RANKER_ENDPOINT, feature_endpoint: FEATURE_ENDPOINT, traffic_enabled: !!TRAFFIC_JOB_ID });
       });
 
       // Sample customers (real data from Unity Catalog via the SQL warehouse).
@@ -292,86 +466,124 @@ createApp({
         }
       });
 
-      // Full offer catalog (the candidate set the ranker scores in one shot).
-      app.get('/api/offers', async (req, res) => {
+      // The four sign-in accounts: real customer_ids picked to match each archetype.
+      app.get('/api/accounts', async (req, res) => {
         try {
-          const token = req.header('x-forwarded-access-token') ?? (await getToken());
-          const rows = await queryRows(
-            `SELECT offer_id, product_category, offer_text, base_reward, tier_requirement FROM ${FQ}.offers`,
-            token,
-          );
-          res.json({ offers: rows });
+          if (!accountsCache) {
+            const token = req.header('x-forwarded-access-token') ?? (await getToken());
+            const sql = ARCHETYPES.map((a) => `(SELECT '${a.key}' AS key, customer_id, loyalty_tier, risk_band, annual_income, tenure_months
+              FROM ${FQ}.customers WHERE loyalty_tier = '${a.tier}' AND risk_band = '${a.risk}'
+              ORDER BY abs(annual_income - ${a.income}) / ${a.income} + abs(tenure_months - ${a.tenure}) / 120.0, customer_id LIMIT 1)`).join(' UNION ALL ');
+            const rows = await queryRows(sql, token);
+            accountsCache = rows.map((r) => ({ ...r, annual_income: Number(r.annual_income), tenure_months: Number(r.tenure_months) }));
+          }
+          res.json({ accounts: accountsCache });
         } catch (e) {
           res.status(500).json({ error: String(e) });
         }
       });
 
-      // Rank-all: score the FULL offer catalog for a customer through the route-optimized
-      // online-lookup endpoint (features fetched online by customer_id). Returns real
-      // P(accept) per offer + the MEASURED serving latency for this request.
-      app.post('/api/recommend', async (req, res) => {
-        const body = (req.body ?? {}) as { customer_id?: string };
-        const customerId = (body.customer_id ?? '').toString();
-        if (!customerId) {
-          res.status(400).json({ error: 'customer_id required' });
-          return;
-        }
+      // Full offer catalog (the candidate set the ranker scores in one shot).
+      app.get('/api/offers', async (req, res) => {
         try {
-          const sqlToken = req.header('x-forwarded-access-token') ?? (await getToken());
-          const offers = await queryRows(
-            `SELECT offer_id, product_category, offer_text, base_reward, tier_requirement FROM ${FQ}.offers`,
-            sqlToken,
-          );
-          const ep = await getRankerEndpoint(sqlToken);
-          const records = offers.map((o) => ({
-            customer_id: customerId,
-            offer_id: o.offer_id,
-            product_category: o.product_category,
-            base_reward: Number(o.base_reward),
-            tier_requirement: Number(o.tier_requirement),
-          }));
-          const body = JSON.stringify({ dataframe_records: records });
-          const queryRanker = (token: string) =>
-            fetch(ep.url, {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-              body,
-            });
-          // Mint the query token BEFORE the timer so a cache-miss OAuth round-trip is never counted
-          // in the reported serving latency (the app's headline sub-300ms meter).
-          let queryToken = await mintQueryToken(ep.id);
-          let t0 = Date.now();
-          let r = await queryRanker(queryToken);
-          // A cached downscoped token can be revoked/invalidated before it expires; on a 401/403,
-          // bust the cache, re-mint, and retry once. Re-mint and reset the timer OUTSIDE the window so
-          // the reported latency reflects only the successful ranker call, not the failed one + mint.
-          if (r.status === 401 || r.status === 403) {
-            invalidateQueryToken();
-            queryToken = await mintQueryToken(ep.id);
-            t0 = Date.now();
-            r = await queryRanker(queryToken);
-          }
-          const latencyMs = Date.now() - t0;
-          if (!r.ok) {
-            res.status(502).json({ error: `ranker query failed: ${r.status} ${(await r.text()).slice(0, 300)}` });
-            return;
-          }
-          const preds = ((await r.json()) as { predictions?: unknown }).predictions;
-          // Expect a flat numeric array aligned 1:1 with offers. Anything else (wrapped objects,
-          // short/long array) would silently score offers as NaN/0 and mis-sort — surface it instead.
-          const nums = Array.isArray(preds) ? preds.map(Number) : [];
-          if (nums.length !== offers.length || nums.some((n) => !Number.isFinite(n))) {
-            res.status(502).json({
-              error: `ranker returned an unexpected predictions shape: expected ${offers.length} numeric scores, got ${JSON.stringify(preds).slice(0, 200)}`,
-            });
-            return;
-          }
-          const scored = offers
-            .map((o, i) => ({ ...o, score: nums[i] }))
-            .sort((a, b) => b.score - a.score);
-          res.json({ offers: scored, latency_ms: latencyMs, endpoint: RANKER_ENDPOINT });
+          const token = req.header('x-forwarded-access-token') ?? (await getToken());
+          res.json({ offers: await getOffers(token) });
         } catch (e) {
           res.status(500).json({ error: String(e) });
+        }
+      });
+
+      // Rank-all: score every offer for this visitor through the route-optimized ranker. The request
+      // carries the visitor id, the offer columns, and the OfferMatch answers (request-time features);
+      // stored and streaming features are looked up online by the endpoint. latency_ms is measured.
+      app.post('/api/recommend', async (req, res) => {
+        const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string; ctx?: Ctx };
+        try {
+          const sqlToken = req.header('x-forwarded-access-token') ?? (await getToken());
+          const { scored, latencyMs } = await rankAll(visitorId(b.customer_id, b.session_id), b.ctx ?? {}, sqlToken);
+          metrics.recommendation(String(scored[0]?.product_category ?? ''));
+          res.json({ offers: scored, latency_ms: latencyMs, endpoint: RANKER_ENDPOINT });
+        } catch (e) {
+          res.status(502).json({ error: String(e) });
+        }
+      });
+
+      // The visitor's features through the Feature Serving endpoint (stored + streaming + CustomUDF).
+      app.post('/api/profile', async (req, res) => {
+        const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string };
+        try {
+          const { customer, categories, latencyMs } = await lookupProfile(visitorId(b.customer_id, b.session_id));
+          metrics.profile(latencyMs);
+          res.json({ customer, categories, latency_ms: latencyMs });
+        } catch (e) {
+          res.status(502).json({ error: String(e) });
+        }
+      });
+
+      // Live numbers for the scale dashboard: only what this app served and what the stream data shows.
+      app.get('/api/metrics', async (req, res) => {
+        try {
+          res.json(await metrics.snapshot(liveCfg(req.header('x-forwarded-access-token'))));
+        } catch (e) {
+          res.status(500).json({ error: String(e) });
+        }
+      });
+
+      // "Simulate live traffic": start/stop the continuous Kafka producer job (notebook 08).
+      app.get('/api/traffic', async (_req, res) => {
+        try {
+          res.json(await trafficStatus(liveCfg()));
+        } catch (e) {
+          res.status(502).json({ error: String(e) });
+        }
+      });
+      app.post('/api/traffic/start', async (_req, res) => {
+        try {
+          res.json(await trafficStart(liveCfg()));
+        } catch (e) {
+          res.status(502).json({ error: String(e) });
+        }
+      });
+      app.post('/api/traffic/stop', async (_req, res) => {
+        try {
+          res.json(await trafficStop(liveCfg()));
+        } catch (e) {
+          res.status(502).json({ error: String(e) });
+        }
+      });
+
+      app.post('/api/ping/start', (_req, res) => {
+        latencyTestSession += 1;
+        latencyTestRunning = true;
+        metrics.resetLatencyMeasurement();
+        res.json({ session_id: latencyTestSession });
+      });
+
+      app.post('/api/ping/stop', (_req, res) => {
+        latencyTestRunning = false;
+        latencyTestSession += 1; // invalidate an in-flight sample
+        res.json({ stopped: true });
+      });
+
+      // One explicit, real-customer data-plane call. No background warm-up enters metrics.
+      app.post('/api/ping', async (req, res) => {
+        try {
+          const sqlToken = req.header('x-forwarded-access-token') ?? (await getToken());
+          if (!pingCustomers.length) {
+            const rows = await queryRows(
+              `SELECT customer_id FROM ${FQ}.customers ORDER BY xxhash64(customer_id) LIMIT 12`, sqlToken);
+            pingCustomers = rows.map((r) => String(r.customer_id));
+          }
+          if (!pingCustomers.length) throw new Error('No customers available for the latency test.');
+          const { session_id } = (req.body ?? {}) as { session_id?: number };
+          const result = await rankAll(pingCustomers[pingIndex++ % pingCustomers.length], {}, sqlToken);
+          if (!latencyTestRunning || session_id !== latencyTestSession) {
+            res.json({ ignored: true });
+            return;
+          }
+          res.json(metrics.latencySample(result.latencyMs));
+        } catch (e) {
+          res.status(502).json({ error: String(e) });
         }
       });
       app.post('/api/chat', async (req, res) => {
@@ -446,22 +658,58 @@ createApp({
       });
     });
 
-    // Warm the route-optimized ranker on boot so the first user recommend isn't a cold start
-    // (the endpoint is scale-to-zero). Fire-and-forget; failures are logged, not fatal.
+    // Warm both route-optimized endpoints on boot. Twelve ranker calls match the benchmark protocol;
+    // server-side p95 is read only after the lookup client and Lakebase connections are warm.
+    // Fire-and-forget so app startup is not blocked.
     void (async () => {
       try {
         const token = await getToken();
-        const ep = await getRankerEndpoint(token);
-        const queryToken = await mintQueryToken(ep.id);
-        await fetch(ep.url, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${queryToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dataframe_records: [{ customer_id: '__warmup__', offer_id: 'warmup', product_category: 'credit_card', base_reward: 0, tier_requirement: 1 }] }),
-        });
-        console.log('[warmup] ranker endpoint warmed');
+        const customers = await queryRows(
+          `SELECT customer_id FROM ${FQ}.customers ORDER BY xxhash64(customer_id) LIMIT 12`,
+          token,
+        );
+        for (const row of customers) await rankAll(String(row.customer_id), {}, token);
+        console.log('[warmup] ranker endpoint warmed with 12 requests');
       } catch (e) {
-        console.warn('[warmup] skipped:', String(e).slice(0, 200));
+        console.warn('[warmup] ranker skipped:', String(e).slice(0, 200));
+      }
+      try {
+        for (let i = 0; i < 3; i += 1) await lookupProfile(`__warmup_${i}__`);
+        console.log('[warmup] feature endpoint warmed with 3 requests');
+      } catch (e) {
+        console.warn('[warmup] feature endpoint skipped:', String(e).slice(0, 200));
       }
     })();
+
+    // Pre-warm the demo traffic path when the app starts. Serverless producer startup takes 60–90s;
+    // doing it here means the stream is already hot when a presenter opens the dashboard. run-now is
+    // idempotent through trafficStart (it reuses an active run), and the job self-terminates.
+    if (TRAFFIC_JOB_ID) {
+      void trafficEnsure(liveCfg())
+        .then((s) => console.log(`[warmup] traffic simulator ${s.state} run=${s.run_id ?? 'none'}`))
+        .catch((e) => console.warn('[warmup] traffic simulator skipped:', String(e).slice(0, 200)));
+    }
+
+    // Prime and continuously refresh the stream cache before the dashboard is opened. The refresh is
+    // non-blocking after the first sample; /api/metrics stays fast while SQL reconciles in background.
+    void metrics.snapshot(liveCfg())
+      .then(() => console.log('[warmup] stream metrics cache primed'))
+      .catch((e) => console.warn('[warmup] stream metrics skipped:', String(e).slice(0, 200)));
+    setInterval(() => { void metrics.snapshot(liveCfg()); }, 1_000);
+
+    // Keep the demo hot while the app is running. Endpoints scale to zero when idle and the producer
+    // job is bounded; refresh both paths before a presenter arrives.
+    // Traffic is operational plumbing and remains separate from recommendation metrics. Model Serving
+    // endpoints stay provisioned during the demo, so no synthetic rank requests are needed here.
+    setInterval(() => {
+      void (async () => {
+        try {
+          if (TRAFFIC_JOB_ID) await trafficEnsure(liveCfg());
+          console.log('[keepalive] traffic is warm');
+        } catch (e) {
+          console.warn('[keepalive] skipped:', String(e).slice(0, 200));
+        }
+      })();
+    }, 30_000);
   },
 }).catch(console.error);

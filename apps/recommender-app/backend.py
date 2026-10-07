@@ -2,7 +2,7 @@
 
 Rank-all recommender: score the FULL offer catalog through the online-lookup
 Model Serving endpoint. The request carries only `{customer_id, offer fields}`;
-the route-optimized `nbo-ranker-online` endpoint fetches the 5 customer features
+the route-optimized `nbo-ranker-online` endpoint fetches the 7 customer features
 from the online store by `customer_id` at request time (the "author once, serve
 online" proof point) and returns an acceptance probability per offer. There is no
 retrieval stage — for a catalog this size you score everything directly, which
@@ -25,10 +25,12 @@ from databricks import sql
 
 CATALOG = os.getenv("CATALOG", "fins_industry_solutions")
 SCHEMA = os.getenv("SCHEMA", "nbo")
-# Online-lookup endpoint: fetches the 5 customer features from the online store by
+# Online-lookup endpoint: fetches the 7 customer features from the online store by
 # customer_id at request time (notebook 05). The request carries only customer_id +
 # the offer fields — the "author once, serve online" proof point.
 RANKER_ENDPOINT = os.getenv("RANKER_ENDPOINT", "nbo-ranker-online")
+# Neutral visitor-context (OfferMatch) answers sent with every request.
+CTX_DEFAULTS = {"ctx_goal": "none", "ctx_credit": "good", "ctx_income": 85000.0, "ctx_card_spend": 1500.0}
 
 
 @dataclass
@@ -113,6 +115,7 @@ class Backend:
             "product_category": o["product_category"],
             "base_reward": float(o["base_reward"]),
             "tier_requirement": int(o["tier_requirement"]),
+            **CTX_DEFAULTS,
         } for o in offers]
 
         # Route-optimized endpoint → data-plane client (data-plane URL + downscoped OAuth token).

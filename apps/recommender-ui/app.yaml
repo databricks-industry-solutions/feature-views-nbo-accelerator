@@ -15,9 +15,16 @@ env:
   # or a pinned --var schema). The app SP cannot auto-derive a per-user schema at runtime.
   - name: SCHEMA
     value: 'nbo'
-  # Route-optimized online-lookup ranker the recommender queries (Part 1's nb05 endpoint).
+  # Route-optimized ranker (Part 2 nb09: batch + streaming features). Use 'nbo-ranker-online' for Part 1 only.
   - name: RANKER_ENDPOINT
-    value: 'nbo-ranker-online'
+    value: 'nbo-ranker-realtime'
+  # Route-optimized Feature Serving endpoint (Part 2 nb10) for the visitor's profile signals + freshness.
+  - name: FEATURE_ENDPOINT
+    value: 'nbo-customer-features'
+  # "Simulate live traffic" job (accelerator bundle resources/traffic_job.yml), bound as an app resource.
+  - name: TRAFFIC_JOB_ID
+    valueFrom: traffic-job
+  # When deployed with the bundle (databricks.yml `config`), these are set from bundle variables instead.
   # Query SP creds (from the nbo secret scope) that mint the endpoint-downscoped OAuth token
   # route-optimized serving requires. Injected at runtime from the scope — never stored here.
   - name: QUERY_SP_CLIENT_ID
