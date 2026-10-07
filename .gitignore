@@ -12,3 +12,5 @@ deploy.local.sh
 .databricks-resources.json
 # Internal operator runbooks holding workspace-specific ids. Not part of the published accelerator.
 *.local.md
+# Local demo power control contains workspace-specific app, endpoint, job, and pipeline names.
+scripts/demo_power.local.sh
