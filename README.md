@@ -28,7 +28,7 @@ serving latency, event throughput, and feature freshness.
 
 ## Architecture
 
-![Next-best-offer architecture](docs/architecture.png)
+![Animated next-best-offer architecture](docs/architecture.gif)
 
 1. **Author features once.** Feature Views define batch, rolling, tumbling, Sawtooth, and
    CustomUDF features in Unity Catalog.
