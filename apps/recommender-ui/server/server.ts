@@ -3,12 +3,11 @@ import { metrics, trafficStatus, trafficStart, trafficEnsure, trafficStop, type 
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
 // ---------------------------------------------------------------------------
-// In-app FP&A agent. The agent loop runs HERE, in the app's own server (no
+// In-app NBO assistant. The agent loop runs HERE, in the app's own server (no
 // separate agent endpoint).
 //
 // Model (MODEL_MODE): 'provider' = Claude on the customer's Anthropic
-// subscription via the UC AI Gateway provider service
-// `archer_finance.ai_gateway.ttan_claude`; 'fm' = hosted Databricks FM Claude.
+// subscription via a UC AI Gateway provider service; 'fm' = hosted Databricks FM Claude.
 // The model call always runs as the app service principal (client-credentials).
 //
 // SQL: read-only queries on the app's SQL warehouse, executed ON BEHALF OF the

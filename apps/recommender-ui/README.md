@@ -1,193 +1,71 @@
-# archer-genie-ui
+# Next-Best-Offer Databricks App
 
-A Databricks App powered by [AppKit](https://www.databricks.com/devhub/docs/appkit/v0/), featuring React, TypeScript, and Tailwind CSS.
+The customer-facing application for the Real-Time Next-Best-Offer accelerator. It combines a
+banking storefront, personalized product recommendations, a live scale dashboard, and an
+interactive architecture walkthrough.
 
-**Enabled plugins:**
-- **Analytics** -- SQL query execution against Databricks SQL Warehouses
-- **Server** -- Express HTTP server with static file serving and Vite dev mode
+## Experience
 
-## Prerequisites
+- **OfferMatch:** customers select goals and preferences, then receive ranked offers.
+- **Product journeys:** cards, savings, loans, mortgages, and investing pages update recommendations
+  from request-time inputs.
+- **Live signals:** Model Serving ranks offers while Feature Serving returns governed customer and
+  streaming features.
+- **Operational dashboard:** explicit load testing, Kafka throughput, and event-to-online freshness.
+- **Architecture walkthrough:** shows how Kafka, Feature Views, Lakebase, training, and serving work
+  together.
 
-- Node.js v22+ and npm
-- Databricks CLI (for deployment)
-- Access to a Databricks workspace
+## Technology
 
-## Databricks Authentication
+- React, TypeScript, Vite, and AppKit
+- Express server routes for ranking, profile lookup, traffic control, and metrics
+- Route-optimized Model Serving and Feature Serving endpoints
+- Lakeflow Jobs for the synthetic traffic producer
+- SQL warehouse access for governed accelerator data
 
-### Local Development
-
-For local development, configure your environment variables by creating a `.env` file:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and set the environment variables you need:
-
-```env
-DATABRICKS_HOST=https://your-workspace.cloud.databricks.com
-DATABRICKS_APP_PORT=8000
-# ... other environment variables, depending on the plugins you use
-```
-
-### CLI Authentication
-
-The Databricks CLI requires authentication to deploy and manage apps. Configure authentication using one of these methods:
-
-#### OAuth U2M
-
-Interactive browser-based authentication with short-lived tokens:
+## Local validation
 
 ```bash
-databricks auth login --host https://your-workspace.cloud.databricks.com
-```
-
-This will open your browser to complete authentication. The CLI saves credentials to `~/.databrickscfg`.
-
-#### Configuration Profiles
-
-Use multiple profiles for different workspaces:
-
-```ini
-[DEFAULT]
-host = https://dev-workspace.cloud.databricks.com
-
-[production]
-host = https://prod-workspace.cloud.databricks.com
-client_id = prod-client-id
-client_secret = prod-client-secret
-```
-
-Deploy using a specific profile:
-
-```bash
-databricks bundle deploy --profile production
-```
-
-**Note:** Personal Access Tokens (PATs) are legacy authentication. OAuth is strongly recommended for better security.
-
-## Getting Started
-
-### Install Dependencies
-
-```bash
-npm install
-```
-
-### Development
-
-Run the app in development mode with hot reload:
-
-```bash
-npm run dev
-```
-
-The app will be available at the URL shown in the console output.
-
-### Build
-
-Build both client and server for production:
-
-```bash
-npm run build
-```
-
-This creates:
-
-- `dist/server.js` - Compiled server bundle
-- `client/dist/` - Bundled client assets
-
-### Production
-
-Run the production build:
-
-```bash
-npm start
-```
-
-## Code Quality
-
-There are a few commands to help you with code quality:
-
-```bash
-# Type checking
+npm ci
 npm run typecheck
-
-# Linting
-npm run lint
-npm run lint:fix
-
-# Formatting
-npm run format
-npm run format:fix
+npx vitest run shared/recommendation.test.ts
+npm run build:server
+npm run build:client
 ```
 
-## Deployment with Databricks Asset Bundles
+## Deploy
 
-### 1. Configure Bundle
-
-Update `databricks.yml` with your workspace settings:
-
-```yaml
-targets:
-  default:
-    workspace:
-      host: https://your-workspace.cloud.databricks.com
-```
-
-Make sure to replace all placeholder values in `databricks.yml` with your actual resource IDs.
-
-### 2. Validate Bundle
+The app is a separate Databricks Asset Bundle. Deploy the accelerator first so the SQL warehouse,
+serving endpoints, Feature Serving endpoint, traffic job, and secret scope already exist.
 
 ```bash
-databricks bundle validate
+databricks apps deploy -t dev -p <profile> --auto-approve \
+  --var app_name=<app-name> \
+  --var sql_warehouse_id=<warehouse-id> \
+  --var catalog=<catalog> \
+  --var schema=<schema> \
+  --var ranker_endpoint=<realtime-ranker-endpoint> \
+  --var feature_endpoint=<feature-serving-endpoint> \
+  --var traffic_job_id=<traffic-job-id>
 ```
 
-### 3. Deploy
+Route-optimized serving requires an OAuth service principal that can query the endpoints. Store its
+client ID and secret in the configured secret scope (default `nbo`) under `sp_client_id` and
+`sp_client_secret`.
 
-Deploy to the default target:
+After deployment:
 
 ```bash
-databricks bundle deploy
+databricks apps get <app-name> -p <profile>
 ```
 
-### 4. Run
+## Project structure
 
-Start the deployed app:
-
-```bash
-databricks bundle run <APP_NAME> -t dev
-```
-
-### Deploy to Production
-
-1. Configure the production target in `databricks.yml`
-2. Deploy to production:
-
-```bash
-databricks bundle deploy -t prod
-```
-
-## Project Structure
-
-```
-* client/          # React frontend
-  * src/           # Source code
-  * public/        # Static assets
-* server/          # Express backend
-  * server.ts      # Server entry point
-  * routes/        # Routes
-* shared/          # Shared types
-* config/          # Configuration
-  * queries/       # SQL query files
-* databricks.yml   # Bundle configuration
-* app.yaml         # App configuration
-* .env.example     # Environment variables example
-```
-
-## Tech Stack
-
-- **Backend**: Node.js, Express
-- **Frontend**: React.js, TypeScript, Vite, Tailwind CSS, React Router
-- **UI Components**: Radix UI, shadcn/ui
-- **Databricks**: AppKit SDK
+| Path | Purpose |
+|---|---|
+| `client/src/views/BankView.tsx` | Customer experience and product journeys |
+| `client/src/views/DashboardView.tsx` | Live serving and freshness dashboard |
+| `client/src/views/HowView.tsx` | Architecture walkthrough |
+| `server/server.ts` | App APIs and serving integration |
+| `server/realtime.ts` | Traffic, throughput, freshness, and latency metrics |
+| `shared/recommendation.ts` | Recommendation suitability contract |

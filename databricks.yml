@@ -54,11 +54,6 @@ variables:
       and skips the MSK/streaming notebooks cleanly. Set --var allow_streaming_online=true once the
       msk_kafka connection + service credential and a Lakebase-capable runtime are in place.
     default: "false"
-  app_name:
-    description: >-
-      Databricks App name for the recommender UI. Override (e.g. --var app_name=nbo-recommender-<you>)
-      when the default name already exists in a shared workspace owned by someone else.
-    default: nbo-recommender
   ranker_online_endpoint:
     description: >-
       Part 1 online-lookup ranker serving-endpoint name. Override in a shared workspace where the

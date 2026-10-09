@@ -1,5 +1,0 @@
-# streamlit, databricks-sdk, and databricks-sql-connector are pre-installed in the
-# Apps runtime. Listed here so `pip install -r requirements.txt` works for local runs.
-streamlit
-databricks-sdk
-databricks-sql-connector

@@ -29,7 +29,7 @@
   "keywords": [],
   "author": "",
   "license": "Unlicensed",
-  "description": "NL-to-SQL FP&A chat powered by Claude via ttan_claude",
+  "description": "Real-time next-best-offer Databricks App",
   "dependencies": {
     "@databricks/appkit": "0.38.1",
     "@databricks/sdk-experimental": "0.17.0"

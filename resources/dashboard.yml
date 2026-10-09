@@ -1,0 +1,9 @@
+# Customer-facing AI/BI Dashboard for the accelerator.
+resources:
+  dashboards:
+    nbo_dashboard:
+      display_name: "NBO Feature Views Accelerator"
+      file_path: ../dashboards/nbo_dashboard.json
+      warehouse_id: ${var.dashboard_warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${var.schema}
