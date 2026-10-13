@@ -181,12 +181,11 @@ except ImportError:
 # MAGIC Streaming features are online-only; `StreamingMode()` runs the continuous materialization
 # MAGIC to the Lakebase online store.
 # MAGIC
-# MAGIC **Single-store invariant.** This streaming feature MUST land in the **same** online store as the
-# MAGIC Part 1 batch features (`online_store_name` = `nbo` here) and the **same** schema. New Lakebase
-# MAGIC Autoscaling online stores do not support a served model looking up features across multiple
-# MAGIC online stores, so if the batch features are in one store and this streaming feature in another,
-# MAGIC the re-logged ranker (nb09) fails to provision its serving role/OAuth token and won't deploy.
-# MAGIC The preflight below fails loudly if the stores don't match rather than creating a broken split.
+# MAGIC **Single-store requirement.** This notebook verifies that Part 1 batch features and Part 2
+# MAGIC streaming features target the same Lakebase online store and schema before materialization.
+# MAGIC New Lakebase configurations cannot create Feature Serving or Model Serving endpoints that span
+# MAGIC multiple online stores. See the public
+# MAGIC [Feature Store and Model Serving documentation](https://docs.databricks.com/aws/en/oltp/projects/feature-store).
 # COMMAND ----------
 # Preflight: the batch features (materialized in nb03) must live in the SAME online store as osn.
 batch_stores = {

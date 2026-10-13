@@ -157,7 +157,7 @@ print("MEASURED — serving latency (online feature read + rank-all)")
 print(f"  endpoint={ranker_endpoint}  requests={N}  offers scored per request={len(offers)}")
 print(f"  p50={serving['p50']}ms  p95={serving['p95']}ms  p99={serving['p99']}ms  "
       f"mean={serving['mean']}ms  min={round(min(lat),1)}ms  max={round(max(lat),1)}ms")
-print("  measured from this driver; subtract cross-region WAN RTT for the in-region number.")
+print("  measured from this driver; results include caller-to-endpoint network time.")
 
 # COMMAND ----------
 # MAGIC %md ## 2 · Feature freshness — event → online availability

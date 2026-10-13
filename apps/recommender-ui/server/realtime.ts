@@ -4,8 +4,7 @@
 //   - stream health from the data itself: events/sec landing in the Kafka ingestion table, and
 //     event -> online-store freshness (commit_time - event_time) on the streaming online table,
 //   - the "Simulate live traffic" job (notebook 08, continuous producer) started and stopped through the
-//     Jobs API. The app never talks to Kafka: Databricks Apps can't open outbound connections to the
-//     MSK broker port, and the site's own clicks are request-time features, so it doesn't need to.
+//     Jobs API.
 // ---------------------------------------------------------------------------
 
 export interface LiveCfg {

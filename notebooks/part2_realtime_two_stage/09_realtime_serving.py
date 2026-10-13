@@ -61,9 +61,8 @@ def gf(n):
 # category. The per-category feature is keyed on (customer_id, product_category); product_category is
 # already a request column, so each offer row looks up its own category count. Website clicks in this
 # session come in the request instead (ctx_session_cat_views), so the two signals never overlap.
-# Keep latest customer attributes and the category-specific streaming signal. Batch-window features
-# remain served by the Feature Serving endpoint and CustomUDF, but their ranker importance is too low
-# to justify another Lakebase table fetch on the sub-20ms serving path.
+# Use the latest customer attributes and category-specific streaming signal in the ranker. The
+# Feature Serving endpoint exposes the additional batch-window and derived features to the app.
 CUST = ["cust_loyalty_tier", "cust_risk_band",
         "cust_annual_income", "cust_tenure_months", "cust_mobile_cat_views_10m"]
 cust_feats = [gf(n) for n in CUST]

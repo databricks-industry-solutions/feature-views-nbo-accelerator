@@ -69,8 +69,7 @@ import requests
 def _load_temp_creds():
     """Refresh the UC service credential before every MSK OAuth token mint.
 
-    The temp credential lifetime is about one hour — the same length as the live demo job — so
-    loading it only once makes a healthy producer fail at the hour boundary.
+    Reload credentials so a long-running producer does not reuse an expired credential.
     """
     resp = requests.post(
         f"{w.config.host}/api/2.1/unity-catalog/temporary-service-credentials",

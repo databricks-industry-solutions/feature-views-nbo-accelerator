@@ -198,8 +198,7 @@ async function queryRows(statement: string, token: string): Promise<Record<strin
 // A plain identity token is rejected. Mint one via client_credentials + authorization_details using the
 // app service principal (DATABRICKS_CLIENT_ID/SECRET, injected in the deployed app).
 // Endpoint-downscoped query tokens are reusable until they expire, so cache per endpoint id and
-// reuse (with a 60s safety margin) instead of minting a fresh one on every /api/recommend — the
-// mint is a synchronous OAuth round-trip on this app's advertised sub-300ms hot path.
+// reuse them with a 60-second expiration safety margin.
 const queryTokens = new Map<string, { token: string; exp: number }>();
 async function mintQueryToken(endpointId: string): Promise<string> {
   const now = Date.now();
@@ -657,9 +656,8 @@ createApp({
       });
     });
 
-    // Warm both route-optimized endpoints on boot. Twelve ranker calls match the benchmark protocol;
-    // server-side p95 is read only after the lookup client and Lakebase connections are warm.
-    // Fire-and-forget so app startup is not blocked.
+    // Warm both endpoint clients on boot without adding these requests to the explicit latency test.
+    // Run asynchronously so the app can start accepting requests immediately.
     void (async () => {
       try {
         const token = await getToken();

@@ -19,11 +19,10 @@
 # MAGIC ### What is faithful, and the one caveat
 # MAGIC - **Inference** is measured directly and is fully representative (the pipeline's `predict_proba`).
 # MAGIC - **Feature lookup** has a pluggable backend (`LOOKUP_MODE`):
-# MAGIC   - `"lakebase"` — a real Lakebase point-read by key (the true ~single-digit-ms online read). Requires
-# MAGIC     the online-store connection; see the preflight cell. **Use this for the real lookup number.**
+# MAGIC   - `"lakebase"` — a Lakebase point-read by key. Requires the online-store connection; see
+# MAGIC     the preflight cell. Use this mode to measure the online lookup.
 # MAGIC   - `"prefetch"` *(default)* — an in-memory read of pre-fetched feature values. Runs anywhere with no
-# MAGIC     Lakebase wiring, but the lookup row is an **assembly-only lower bound (~0ms), not a Lakebase read** —
-# MAGIC     it is labeled as such in the output so it is never mistaken for the real number.
+# MAGIC     Lakebase wiring. The lookup row measures in-memory assembly, not a Lakebase read.
 # MAGIC - **Round trip / network overhead** are optional (`MEASURE_ENDPOINT`); they query the already-deployed
 # MAGIC   `nbo-ranker-online` endpoint (a query, not a deploy). `databricks-feature-engineering` has no fast
 # MAGIC   client-side online read, so this endpoint path is the other way to see the real in-container lookup cost.
@@ -370,11 +369,9 @@ print(f"total     p50={pct(total_ms,50)}  p95={pct(total_ms,95)}ms")
 
 # COMMAND ----------
 # MAGIC %md ## (Optional) End-to-end round trip via the deployed endpoint
-# MAGIC Queries the existing `nbo-ranker-online` endpoint (not a deploy). Run this INTERACTIVELY — the
-# MAGIC route-optimized data-plane query needs OAuth and fails under job/runtime auth. Round trip includes the real
-# MAGIC in-container Lakebase read + inference + container overhead + network. A rough network+container
-# MAGIC overhead proxy is the round trip minus the locally-measured model time — the two come from
-# MAGIC independent measurement contexts, so it is approximate (differenced at the percentile level).
+# MAGIC Queries the existing `nbo-ranker-online` endpoint and measures full caller-to-response time.
+# MAGIC The reported overhead proxy subtracts local model time from the endpoint round trip; because
+# MAGIC they are independent measurements, the difference is approximate.
 # COMMAND ----------
 round_trip_ms = []
 if MEASURE_ENDPOINT:

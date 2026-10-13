@@ -250,22 +250,19 @@ export function HowView() {
     ['App round trip p50', 0, isNum(total) ? total : null, '#ff3621'],
   ];
 
-  // Platform figures from the Feature Store architecture slide, plus what this app measured live.
+  // Show only measurements collected by this running app.
   const callouts: { n: string; t: string; live?: string }[] = [
     {
-      n: '200 ms',
-      t: 'streaming feature freshness p99, stream -> Lakebase',
-      live: isNum(m?.freshness?.p95_s) ? `freshness p95 ${sec(m?.freshness?.p95_s)}` : undefined,
+      n: isNum(m?.freshness?.p95_s) ? sec(m.freshness.p95_s) : '—',
+      t: 'measured freshness p95',
     },
     {
-      n: '50K QPS',
-      t: 'Feature Serving throughput',
-      live: isNum(m?.recommend?.qps) && (m?.recommend?.count ?? 0) > 0 ? `${m!.recommend.qps.toFixed(2)} req/s from this app` : undefined,
+      n: isNum(m?.recommend?.qps) && (m?.recommend?.count ?? 0) > 0 ? `${m.recommend.qps.toFixed(2)} req/s` : '—',
+      t: 'measured recommendations per second',
     },
     {
-      n: '40 ms',
-      t: 'feature fetch p99 at that load',
-      live: isNum(m?.recommend?.p95_ms) ? `actual demo request p95 ${ms(m.recommend.p95_ms)}` : undefined,
+      n: isNum(m?.recommend?.p95_ms) ? ms(m.recommend.p95_ms) : '—',
+      t: 'measured request p95',
     },
     { n: '1', t: 'definition per feature: same code trains and serves' },
   ];

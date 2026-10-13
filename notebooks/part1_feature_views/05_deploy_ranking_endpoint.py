@@ -272,7 +272,7 @@ else:
 
 # Endpoint deploy is async. Block until the config update finishes and the endpoint is READY
 # so the downstream latency feature-serving benchmark doesn't query a not-ready / cold endpoint.
-print(f"Waiting for {ENDPOINT} to become READY (build + provision can take ~10-20 min on first deploy)...")
+print(f"Waiting for {ENDPOINT} to become READY...")
 w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
 print(f"{ENDPOINT} is READY.")
 
