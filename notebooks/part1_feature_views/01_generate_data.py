@@ -304,7 +304,7 @@ FROM s
 for t in ["customers", "offers", "transactions", "session_events", "labels"]:
     print(f"{t:16s} {spark.table(t).count():>12,}")
 display(spark.sql("SELECT round(avg(accepted),4) AS accept_rate FROM labels"))
-# Personalization check: acceptance by tier x category must vary (the old additive labels were flat).
+# Personalization check: acceptance by tier and category must vary.
 display(spark.sql("""
 SELECT c.loyalty_tier, o.product_category, round(avg(l.accepted), 3) AS accept_rate, count(*) AS n
 FROM labels l JOIN customers c USING (customer_id) JOIN offers o USING (offer_id)

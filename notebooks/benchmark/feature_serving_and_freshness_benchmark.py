@@ -12,8 +12,8 @@
 # MAGIC    online store. `commit_time − event_time` spans the whole path — Kafka write → ingestion →
 # MAGIC    aggregation → online-store write.
 # MAGIC
-# MAGIC Section 1 always runs. Section 2 runs when `allow_streaming_online=true` (it needs the Part 2
-# MAGIC streaming path: the MSK connection and a RUNNING ingestion pipeline).
+# MAGIC Section 1 always runs. Section 2 runs when `run_freshness=true`; it requires the Part 2
+# MAGIC Kafka connection and running streaming materialization pipelines.
 # MAGIC
 # MAGIC Results are written to the `results_table` widget so the AI/BI dashboard can read them:
 # MAGIC Part 1 → `part1_latency_results`, Part 2 → `part2_latency_results`.
@@ -28,8 +28,8 @@ dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("ranker_endpoint", "nbo-ranker-online")
 dbutils.widgets.text("results_table", "part1_latency_results")
 dbutils.widgets.text("n_requests", "100")
-# Freshness (section 2) — needs the Part 2 streaming path.
-dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
+# Freshness (section 2) — enabled by the Part 2 Lakeflow Job.
+dbutils.widgets.dropdown("run_freshness", "false", ["false", "true"])
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("service_credential", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
@@ -47,7 +47,7 @@ if not schema:
 ranker_endpoint = dbutils.widgets.get("ranker_endpoint")
 results_table = dbutils.widgets.get("results_table").strip()
 N = int(dbutils.widgets.get("n_requests"))
-RUN_FRESHNESS = dbutils.widgets.get("allow_streaming_online") == "true"
+RUN_FRESHNESS = dbutils.widgets.get("run_freshness") == "true"
 conn_name = dbutils.widgets.get("kafka_connection")
 service_credential = dbutils.widgets.get("service_credential")
 topic = dbutils.widgets.get("topic")
@@ -77,7 +77,7 @@ def pct(a, p):
     return round(xs[min(idx, len(xs) - 1)], 1)
 
 print(f"catalog={catalog}  schema={schema}  endpoint={ranker_endpoint}  results_table={results_table}")
-print(f"freshness section: {'ENABLED' if RUN_FRESHNESS else 'skipped (allow_streaming_online=false)'}")
+print(f"freshness section: {'ENABLED' if RUN_FRESHNESS else 'disabled for this run'}")
 
 # COMMAND ----------
 # MAGIC %md ## 1 · Serving latency — online feature read + rank-all
@@ -166,8 +166,7 @@ print("  measured from this driver; subtract cross-region WAN RTT for the in-reg
 # COMMAND ----------
 probe = None
 if not RUN_FRESHNESS:
-    print("Freshness section skipped: allow_streaming_online=false. Set it to true (with the MSK "
-          "connection configured and the notebook-07 ingestion pipeline RUNNING) to measure freshness.")
+    print("Freshness section disabled. Set run_freshness=true after Part 2 pipelines are running to measure it.")
 else:
     conn = w.connections.get(name=conn_name)
     BOOTSTRAP = dict(conn.options or {})["bootstrap_servers"]

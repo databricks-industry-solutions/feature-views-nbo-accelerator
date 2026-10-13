@@ -63,4 +63,5 @@ resources:
               catalog: ${var.catalog}
               schema: ${var.schema}
               ranker_endpoint: ${var.ranker_online_endpoint}
+              run_freshness: "false"
               results_table: part1_latency_results

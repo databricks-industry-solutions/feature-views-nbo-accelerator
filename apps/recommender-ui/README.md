@@ -35,28 +35,29 @@ npm run build:client
 
 ## Deploy
 
-The app is a separate Databricks Asset Bundle. Deploy the accelerator first so the SQL warehouse,
-serving endpoints, Feature Serving endpoint, traffic job, and secret scope already exist.
+The root bundle owns this App together with its Lakeflow Jobs and dashboard. Build the client and
+server, then deploy from the repository root:
 
 ```bash
-databricks apps deploy -t dev -p <profile> --auto-approve \
-  --var app_name=<app-name> \
-  --var sql_warehouse_id=<warehouse-id> \
-  --var catalog=<catalog> \
-  --var schema=<schema> \
-  --var ranker_endpoint=<realtime-ranker-endpoint> \
-  --var feature_endpoint=<feature-serving-endpoint> \
-  --var traffic_job_id=<traffic-job-id>
+cd apps/recommender-ui
+npm ci
+npm run build:server
+npm run build:client
+cd ../..
+
+databricks bundle deploy -t dev -p <profile> \
+  --var warehouse_id=<warehouse-id>
 ```
 
 Route-optimized serving requires an OAuth service principal that can query the endpoints. Store its
 client ID and secret in the configured secret scope (default `nbo`) under `sp_client_id` and
 `sp_client_secret`.
 
-After deployment:
+Start the App after deployment:
 
 ```bash
-databricks apps get <app-name> -p <profile>
+databricks bundle run nbo_recommender_ui -t dev -p <profile> \
+  --var warehouse_id=<warehouse-id>
 ```
 
 ## Project structure

@@ -5,9 +5,8 @@
 # MAGIC point-in-time-correct training set, then a LightGBM classifier ranks offers by
 # MAGIC acceptance probability. Logged with `fe.log_model` so the serving endpoint auto-fetches
 # MAGIC online features by entity key at request time (notebook 05).
-# MAGIC
-# MAGIC **Verified end-to-end on serverless** — 400K labels, val AUC ≈ 0.70, registered to UC
-# MAGIC `nbo_ranker@prod`.
+# MAGIC The notebook reports validation metrics for the generated dataset and registers the selected
+# MAGIC model version in Unity Catalog.
 
 # COMMAND ----------
 # MAGIC %pip install "databricks-feature-engineering>=0.16.0" lightgbm scikit-learn

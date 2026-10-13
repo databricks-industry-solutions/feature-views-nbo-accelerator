@@ -22,4 +22,3 @@ resources:
               # Warm process stays available for pause/resume throughout a demo day; the demo power
               # script cancels it when the environment is paused.
               duration_sec: "14400"
-              allow_streaming_online: ${var.allow_streaming_online}

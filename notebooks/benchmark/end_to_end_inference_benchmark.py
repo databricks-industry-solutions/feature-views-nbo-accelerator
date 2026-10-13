@@ -199,8 +199,8 @@ _lb_tables_widget = dbutils.widgets.get("lakebase_online_tables")
 def _lakebase_token():
     """Return the Lakebase DB credential from the `lakebase_token` widget. Mint one with
     `databricks postgres generate-database-credential <endpoint_path>` (valid ~1h) and paste it in.
-    A pre-minted token is required: it is the only path verified to work here, and it sidesteps the
-    in-job SDK-auth / credential-API-shape issues, so no unverified SDK fallback is attempted."""
+    A pre-minted token is required so the benchmark uses an explicit, time-bounded database
+    credential rather than relying on notebook-runtime authentication."""
     if _lb_token_widget:
         return _lb_token_widget
     raise RuntimeError(

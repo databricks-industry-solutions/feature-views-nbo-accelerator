@@ -27,7 +27,6 @@
 dbutils.widgets.text("catalog", "fins_industry_solutions")
 dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("feature_endpoint", "nbo-customer-features")
-dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
 catalog = dbutils.widgets.get("catalog").strip()
 schema = dbutils.widgets.get("schema").strip()
 if not schema:
@@ -35,10 +34,6 @@ if not schema:
     _user = spark.sql("SELECT current_user()").first()[0]
     schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
 ENDPOINT = dbutils.widgets.get("feature_endpoint")
-
-if dbutils.widgets.get("allow_streaming_online") != "true":
-    msg = "Feature Serving endpoint skipped: Part 2 streaming is gated (allow_streaming_online=false)."
-    print(msg); dbutils.notebook.exit(msg)
 
 from databricks.feature_engineering import FeatureEngineeringClient
 from databricks.feature_engineering.entities import CustomUDF, FeatureViewSource

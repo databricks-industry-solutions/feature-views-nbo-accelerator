@@ -100,6 +100,12 @@ deployment creates a per-user schema to avoid collisions in shared workspaces.
 2. Validate and deploy the bundle:
 
    ```bash
+   cd apps/recommender-ui
+   npm ci
+   npm run build:server
+   npm run build:client
+   cd ../..
+
    databricks bundle validate -t dev -p <profile> \
      --var warehouse_id=<warehouse-id>
 
@@ -107,7 +113,7 @@ deployment creates a per-user schema to avoid collisions in shared workspaces.
      --var warehouse_id=<warehouse-id>
    ```
 
-3. Run Part 1, or opt into the complete streaming path:
+3. Run Part 1 or the complete streaming path:
 
    ```bash
    # Batch Feature Views, training, and online serving
@@ -116,12 +122,15 @@ deployment creates a per-user schema to avoid collisions in shared workspaces.
 
    # Full solution; requires Kafka/MSK prerequisites
    databricks bundle run nbo_end_to_end -t dev -p <profile> \
-     --var warehouse_id=<warehouse-id> \
-     --var allow_streaming_online=true
+     --var warehouse_id=<warehouse-id>
    ```
 
-4. Deploy the current customer application from `apps/recommender-ui/`; its README lists the app
-   resource bindings and deployment command.
+4. Start the App when you are ready to demo it:
+
+   ```bash
+   databricks bundle run nbo_recommender_ui -t dev -p <profile> \
+     --var warehouse_id=<warehouse-id>
+   ```
 
 ## Key configuration
 

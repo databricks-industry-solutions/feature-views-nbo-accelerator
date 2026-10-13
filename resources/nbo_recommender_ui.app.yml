@@ -1,0 +1,50 @@
+# Current customer-facing NBO application. This is the only App managed by the root bundle.
+resources:
+  apps:
+    nbo_recommender_ui:
+      name: ${var.app_name}
+      description: Real-time Next-Best-Offer recommender and live feature platform demo
+      source_code_path: ../apps/recommender-ui
+      config:
+        command: [npm, run, start]
+        env:
+          - { name: DATABRICKS_WAREHOUSE_ID, value_from: sql-warehouse }
+          - { name: MODEL_MODE, value: fm }
+          - { name: AGENT_MODEL, value: databricks-claude-sonnet-5 }
+          - { name: CATALOG, value: '${var.catalog}' }
+          - { name: SCHEMA, value: '${var.schema}' }
+          - { name: RANKER_ENDPOINT, value: '${var.ranker_realtime_endpoint}' }
+          - { name: FEATURE_ENDPOINT, value: '${var.feature_serving_endpoint}' }
+          - { name: TRAFFIC_JOB_ID, value_from: traffic-job }
+          - { name: QUERY_SP_CLIENT_ID, value_from: query-sp-client-id }
+          - { name: QUERY_SP_CLIENT_SECRET, value_from: query-sp-client-secret }
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: ranker-endpoint
+          serving_endpoint:
+            name: ${var.ranker_realtime_endpoint}
+            permission: CAN_MANAGE
+        - name: feature-endpoint
+          serving_endpoint:
+            name: ${var.feature_serving_endpoint}
+            permission: CAN_QUERY
+        - name: traffic-job
+          job:
+            id: ${resources.jobs.nbo_traffic_simulator.id}
+            permission: CAN_MANAGE_RUN
+        - name: query-sp-client-id
+          secret:
+            scope: ${var.query_sp_scope}
+            key: sp_client_id
+            permission: READ
+        - name: query-sp-client-secret
+          secret:
+            scope: ${var.query_sp_scope}
+            key: sp_client_secret
+            permission: READ

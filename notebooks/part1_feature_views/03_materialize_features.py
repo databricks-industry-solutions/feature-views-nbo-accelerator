@@ -6,9 +6,7 @@
 # MAGIC feature type. Features were registered in notebook 02, so here we **fetch** them with
 # MAGIC `get_feature` (re-creating raises `AlreadyExists`).
 # MAGIC
-# MAGIC **Verified end-to-end on serverless (`databricks-feature-engineering>=0.16.0`).**
-# MAGIC
-# MAGIC Gotchas learned the hard way:
+# MAGIC Materialization rules:
 # MAGIC - Offline and online destinations **must differ** — use distinct `table_name_prefix`
 # MAGIC   (here `nbo_off` vs `nbo_on`), even within the same catalog/schema.
 # MAGIC - Aggregation features → `CronSchedule` (offline+online); `ColumnSelection` → `TableTrigger`
@@ -144,7 +142,7 @@ print("All online tables ready — safe to train (04) and deploy the endpoint (0
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Streaming features (RollingWindow over MSK) — online-only via `StreamingMode`
-# MAGIC This is a Part 2 concern; see notebook 07 (currently gated — read its preflight cell):
+# MAGIC Part 2 adds streaming materialization; see notebook 07:
 # MAGIC ```python
 # MAGIC from databricks.feature_engineering.entities import StreamingMode
 # MAGIC fe.materialize_features(

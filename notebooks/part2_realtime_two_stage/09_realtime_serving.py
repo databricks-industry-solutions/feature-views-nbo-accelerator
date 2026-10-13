@@ -11,8 +11,8 @@
 # MAGIC continuously maintained by the streaming pipeline) feeds the same ranker within the
 # MAGIC sub-300ms serving path. Latency + freshness are benchmarked in the feature-freshness benchmark.
 # MAGIC
-# MAGIC **Why no Vector Search:** for a ~40-offer catalog, retrieval adds ~90ms for no benefit —
-# MAGIC you can score every offer directly. Retrieval only earns its place at catalog scale
+# MAGIC **Why no Vector Search:** for a ~40-offer catalog, retrieval adds an unnecessary stage;
+# MAGIC every offer can be scored directly. Retrieval earns its place at larger catalog scale
 # MAGIC (thousands of products); that variant is deliberately out of scope here (see README).
 
 # COMMAND ----------
@@ -29,19 +29,6 @@ if not schema:
     import re as _re
     _user = spark.sql("SELECT current_user()").first()[0]
     schema = "nbo_" + _re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
-
-# --- Preflight gate (same switch as notebook 07) ---
-# This notebook re-logs the ranker with the streaming feature `cust_clicks_10m` and deploys the
-# realtime endpoint. Both require Part 2's streaming feature to be materialized (notebooks 07/08),
-# which is gated OFF by default. Gate here so a gated run skips cleanly instead of failing on a
-# missing streaming feature. Opt in with allow_streaming_online=true once the MSK infra works.
-dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
-if dbutils.widgets.get("allow_streaming_online") != "true":
-    msg = ("Streaming ranker re-log + realtime endpoint deploy skipped: Part 2 streaming is gated "
-           "(allow_streaming_online=false). Part 1 covers the full author-once / online-lookup / "
-           "ranking story end-to-end. Set allow_streaming_online=true (with working MSK infra) to "
-           "run Part 2, then re-run.")
-    print(msg); dbutils.notebook.exit(msg)
 
 import mlflow
 import pandas as pd
@@ -218,11 +205,9 @@ from databricks.sdk.service.serving import (
 )
 w = WorkspaceClient()
 ENDPOINT, SERVED = dbutils.widgets.get("ranker_endpoint"), "nbo-realtime-ro"
-# scale_to_zero_enabled=True so the endpoint costs nothing while idle (see notebook 05 for the same
-# choice). Trade-off: after idle it scales to zero and the next request pays a cold start, so warm
-# the endpoint before measuring latency (the feature-freshness benchmark) or demoing.
+# Scale to zero limits idle cost. Warm the endpoint before measuring latency or presenting the demo.
 served = [ServedEntityInput(name=SERVED, entity_name=MODEL, entity_version=newest.version,
-                            workload_size="Small", scale_to_zero_enabled=False)]
+                            workload_size="Small", scale_to_zero_enabled=True)]
 if ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
     w.serving_endpoints.update_config(name=ENDPOINT, served_entities=served)
 else:

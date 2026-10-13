@@ -11,9 +11,8 @@
 # MAGIC | Batch, fixed bucket | `TumblingWindow` | 90-day total spend |
 # MAGIC | Latest attribute | `ColumnSelection` | loyalty tier, risk band, income, tenure |
 # MAGIC
-# MAGIC Streaming in-session features (`RollingWindow` over MSK) are a Part 2 concern, added once the
-# MAGIC Kafka stream is registered — see notebook 07 (currently gated; read its preflight cell) and the
-# MAGIC streaming-extension sketch at the bottom of this notebook.
+# MAGIC Streaming in-session features (`RollingWindow` over MSK) are added in Part 2 after the Kafka
+# MAGIC stream is registered; see notebook 07 and the streaming-extension sketch below.
 # MAGIC
 # MAGIC **Runs on serverless** (latest environment) with `databricks-feature-engineering>=0.16.0`.
 

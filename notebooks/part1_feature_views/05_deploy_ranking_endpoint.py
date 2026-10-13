@@ -6,10 +6,8 @@
 # MAGIC The ranking endpoint auto-fetches customer features **from the online store by
 # MAGIC `customer_id`** at request time — the request body carries only `customer_id` + the
 # MAGIC offer fields. This is the "author a feature once, serve it online" proof point.
-# MAGIC
-# MAGIC **Verified end-to-end** — request `{customer_id, offer_id,
-# MAGIC product_category, base_reward, tier_requirement}` → endpoint looks up the 5 customer
-# MAGIC features online → ranks. ~15ms in-region per 40-offer batch, per-customer offer spread up to 1.0.
+# MAGIC A request supplies the customer key, offer attributes, and request-time context. The endpoint
+# MAGIC retrieves governed online features and returns one acceptance score per offer.
 # MAGIC
 # MAGIC ### How request-time offer columns coexist with online-looked-up features
 # MAGIC `fe.log_model(training_set=...)` records the training-set schema. The serving wrapper
@@ -262,10 +260,9 @@ from databricks.sdk.service.serving import (
 )
 w = WorkspaceClient()
 ENDPOINT, SERVED = dbutils.widgets.get("ranker_endpoint"), "nbo-online-ro"
-# Demo endpoint stays provisioned so user actions never pay a cold start. `scripts/demo_power.sh pause`
-# must restore scale-to-zero after the demo to avoid idle serving cost.
+# Scale to zero limits idle cost. Warm the endpoint before measuring latency or presenting the demo.
 served = [ServedEntityInput(name=SERVED, entity_name=MODEL, entity_version=newest.version,
-                            workload_size="Small", scale_to_zero_enabled=False)]
+                            workload_size="Small", scale_to_zero_enabled=True)]
 if ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
     w.serving_endpoints.update_config(name=ENDPOINT, served_entities=served)
 else:

@@ -23,7 +23,6 @@ resources:
               service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
               mode: topic
-              allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: streaming_feature_views
           depends_on: [{ task_key: kafka_topic }]
@@ -35,7 +34,6 @@ resources:
               kafka_connection: ${var.kafka_connection}
               topic: ${var.kafka_topic}
               online_store_name: ${var.online_store_name}
-              allow_streaming_online: ${var.allow_streaming_online}
 
         # Replay the label-linked session history (original event_time) so training sees in-session
         # signal at label time. Without it cust_cat_views_10m is ~0 for every label (see nb08 §3r).
@@ -50,7 +48,6 @@ resources:
               service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
               mode: replay
-              allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: kafka_producer
           depends_on: [{ task_key: kafka_replay_history }]
@@ -69,7 +66,6 @@ resources:
               service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
               mode: bounded
-              allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: realtime_serving
           depends_on: [{ task_key: kafka_producer }]
@@ -79,7 +75,6 @@ resources:
               catalog: ${var.catalog}
               schema: ${var.schema}
               ranker_endpoint: ${var.ranker_realtime_endpoint}
-              allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: feature_serving_endpoint
           depends_on: [{ task_key: realtime_serving }]
@@ -88,7 +83,6 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              allow_streaming_online: ${var.allow_streaming_online}
 
         - task_key: latency_and_freshness
           depends_on: [{ task_key: realtime_serving }]
@@ -101,5 +95,5 @@ resources:
               kafka_connection: ${var.kafka_connection}
               service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
-              allow_streaming_online: ${var.allow_streaming_online}
+              run_freshness: "true"
               results_table: part2_latency_results

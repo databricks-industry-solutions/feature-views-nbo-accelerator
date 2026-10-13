@@ -11,12 +11,11 @@
 # MAGIC
 # MAGIC The streaming feature `cust_clicks_10m` (count of in-session events per customer over a
 # MAGIC 10-minute rolling window) captures the customer's freshest in-session intent to serve to the
-# MAGIC model endpoint. **Status:** the online materialization of this streaming feature is currently
-# MAGIC gated (see the preflight cell below) — Part 1 is the fully-working path.
+# MAGIC model endpoint.
 # MAGIC
-# MAGIC **Prereqs:** `databricks-feature-engineering>=0.16.0`, DBR 17.0 ML+, enterprise workspace
-# MAGIC with Lakebase, and a **standard-storage UC catalog** (`fins_industry_solutions` qualifies).
-# MAGIC The MSK topic exists (notebook 08).
+# MAGIC **Prerequisites:** Lakebase, a standard-storage Unity Catalog catalog, a Unity Catalog Kafka
+# MAGIC connection, and a reachable Kafka/MSK topic. Notebook 08 creates the topic before this
+# MAGIC notebook runs in the Part 2 Lakeflow Job.
 # MAGIC
 # MAGIC **Per the docs:**
 # MAGIC - `create_stream` starts a **managed, continuous ingestion pipeline** that reads the topic
@@ -56,32 +55,6 @@ from databricks.feature_engineering.entities import (
     OnlineStoreConfig, OfflineStoreConfig, StreamingMode,
 )
 fe = FeatureEngineeringClient()
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## ⚠️ Preflight — Part 2 streaming online serving is currently gated
-# MAGIC The `StreamingMode()` online materialization below depends on a platform capability that is
-# MAGIC **not yet available on serverless / pre-DBR-19 runtimes**: the streaming Feature View's online
-# MAGIC sink does not populate the Lakebase online table (it stays at 0 rows), so the live
-# MAGIC `cust_clicks_10m` feature never reaches the serving endpoint. Rather than print a misleading
-# MAGIC "success", this notebook **stops early with a clear message** unless you explicitly opt in.
-# MAGIC
-# MAGIC Set the widget `allow_streaming_online=true` (and run on a runtime where the streaming online
-# MAGIC sink is supported) to proceed. Part 1 is fully functional and unaffected by this gate.
-# COMMAND ----------
-dbutils.widgets.dropdown("allow_streaming_online", "false", ["false", "true"])
-ALLOW_STREAMING_ONLINE = dbutils.widgets.get("allow_streaming_online") == "true"
-
-if not ALLOW_STREAMING_ONLINE:
-    msg = (
-        "Part 2 streaming online serving is gated: the StreamingMode() online sink does not "
-        "populate the Lakebase online table on this runtime (known limitation, pre-DBR-19). "
-        "Part 1 covers the full author-once / online-lookup / ranking story and runs end-to-end. "
-        "To attempt Part 2 anyway on a supported runtime, set the widget "
-        "allow_streaming_online=true and re-run."
-    )
-    print(msg)
-    dbutils.notebook.exit(msg)
 
 # COMMAND ----------
 # MAGIC %md ## 1 · Create the Stream (per docs: this starts the managed ingestion pipeline)
@@ -293,7 +266,7 @@ while True:
         print(f"Ingestion pipeline is RUNNING after {int(time.time() - start)}s. Safe to produce (08).")
         break
     if "FAILED" in state:
-        raise RuntimeError(f"Ingestion pipeline {pid} entered {state}; check the pipeline run for a validation error (see Pitfall #5).")
+        raise RuntimeError(f"Ingestion pipeline {pid} entered {state}; inspect its pipeline events for the validation error.")
     if time.time() - start > DEADLINE_S:
         raise TimeoutError(f"Ingestion pipeline {pid} did not reach RUNNING within {DEADLINE_S}s (last state: {state}).")
     time.sleep(POLL_S)

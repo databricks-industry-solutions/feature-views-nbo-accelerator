@@ -1,33 +1,4 @@
 command: ['npm', 'run', 'start']
-env:
-  # SQL warehouse for the assistant's run_sql tool + the app's data endpoints (OBO where possible).
-  - name: DATABRICKS_WAREHOUSE_ID
-    valueFrom: sql-warehouse
-  # Hosted Databricks FM Claude (no external provider needed).
-  - name: MODEL_MODE
-    value: 'fm'
-  - name: AGENT_MODEL
-    value: 'databricks-claude-sonnet-5'
-  # NBO data location (customers/offers/labels + assistant tables).
-  - name: CATALOG
-    value: 'fins_industry_solutions'
-  # Set SCHEMA to the schema the accelerator deployed into (e.g. nbo_<username> from notebook 00,
-  # or a pinned --var schema). The app SP cannot auto-derive a per-user schema at runtime.
-  - name: SCHEMA
-    value: 'nbo'
-  # Route-optimized ranker (Part 2 nb09: batch + streaming features). Use 'nbo-ranker-online' for Part 1 only.
-  - name: RANKER_ENDPOINT
-    value: 'nbo-ranker-realtime'
-  # Route-optimized Feature Serving endpoint (Part 2 nb10) for the visitor's profile signals + freshness.
-  - name: FEATURE_ENDPOINT
-    value: 'nbo-customer-features'
-  # "Simulate live traffic" job (accelerator bundle resources/traffic_job.yml), bound as an app resource.
-  - name: TRAFFIC_JOB_ID
-    valueFrom: traffic-job
-  # When deployed with the bundle (databricks.yml `config`), these are set from bundle variables instead.
-  # Query SP creds (from the nbo secret scope) that mint the endpoint-downscoped OAuth token
-  # route-optimized serving requires. Injected at runtime from the scope — never stored here.
-  - name: QUERY_SP_CLIENT_ID
-    valueFrom: query-sp-client-id
-  - name: QUERY_SP_CLIENT_SECRET
-    valueFrom: query-sp-client-secret
+
+# Environment variables and resource bindings are defined once in the root bundle resource:
+# resources/nbo_recommender_ui.app.yml.

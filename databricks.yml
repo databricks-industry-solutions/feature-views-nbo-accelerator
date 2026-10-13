@@ -10,6 +10,14 @@
 bundle:
   name: feature-views-nbo-accelerator
 
+sync:
+  exclude:
+    - apps/recommender-ui/node_modules
+    - apps/recommender-ui/tests
+  include:
+    - apps/recommender-ui/dist/**
+    - apps/recommender-ui/client/dist/**
+
 include:
   - resources/*.yml
 
@@ -48,12 +56,6 @@ variables:
   kafka_topic:
     description: Kafka topic for in-session events
     default: nbo-session-events
-  allow_streaming_online:
-    description: >-
-      Part 2 streaming gate. Default "false" keeps the e2e green on Part 1 (the fully-working path)
-      and skips the MSK/streaming notebooks cleanly. Set --var allow_streaming_online=true once the
-      msk_kafka connection + service credential and a Lakebase-capable runtime are in place.
-    default: "false"
   ranker_online_endpoint:
     description: >-
       Part 1 online-lookup ranker serving-endpoint name. Override in a shared workspace where the
@@ -64,6 +66,15 @@ variables:
       Part 2 route-optimized realtime ranker serving-endpoint name. Override in a shared workspace
       where the default is already owned by another user.
     default: nbo-ranker-realtime
+  feature_serving_endpoint:
+    description: Feature Serving endpoint over the governed customer profile FeatureSpec.
+    default: nbo-customer-features
+  query_sp_scope:
+    description: Secret scope containing sp_client_id and sp_client_secret for route-optimized queries.
+    default: nbo
+  app_name:
+    description: Databricks App name; lowercase letters, digits, and hyphens, maximum 30 characters.
+    default: nbo-ui-${workspace.current_user.domain_friendly_name}
 
 targets:
   # Host is intentionally omitted from both targets so nothing workspace-specific is committed.
@@ -74,3 +85,5 @@ targets:
 
   prod:
     mode: production
+    variables:
+      app_name: nbo-recommender-ui
