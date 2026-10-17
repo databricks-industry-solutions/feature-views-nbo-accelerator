@@ -32,6 +32,7 @@ dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("service_credential", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
+dbutils.widgets.text("app_name", "")  # topic mode: grant this Databricks App ACCESS on the service credential
 dbutils.widgets.text("mode", "bounded", "topic | bounded | continuous | replay")
 dbutils.widgets.text("num_events", "200000")
 dbutils.widgets.text("events_per_sec", "25")  # continuous: rows/sec. LOW (~20-25) for a clean feature-freshness-benchmark §2b freshness read; raise for a load test.
@@ -60,6 +61,33 @@ conn = w.connections.get(name=conn_name)
 BOOTSTRAP = dict(conn.options or {})["bootstrap_servers"]
 REGION = (re.search(r"\.([a-z]{2}-[a-z]+-\d)\.amazonaws\.com", BOOTSTRAP) or [None, "us-west-2"])[1]
 print("bootstrap:", BOOTSTRAP, "| region:", REGION)
+
+# COMMAND ----------
+# MAGIC %md ## 0 · Let the app produce to Kafka (topic mode)
+# MAGIC The app's Live stream tab writes click events to this topic itself, authenticating to MSK with IAM through
+# MAGIC the same UC service credential. A bundle can bind connections, volumes and tables to an app, but not a
+# MAGIC service credential, so this grants the app's service principal `ACCESS` on it. Idempotent; it needs the
+# MAGIC credential owner or MANAGE. If the grant is not allowed, it prints the command to run and continues.
+# COMMAND ----------
+app_name = dbutils.widgets.get("app_name").strip()
+if mode == "topic" and app_name:
+    app_sp = w.apps.get(name=app_name).service_principal_client_id
+    path = f"/api/2.1/unity-catalog/permissions/credential/{service_credential}"
+    try:
+        w.api_client.do("PATCH", path, body={"changes": [{"principal": app_sp, "add": ["ACCESS"]}]})
+        granted = {
+            p
+            for a in w.api_client.do("GET", path).get("privilege_assignments", [])
+            if a.get("principal") == app_sp
+            for p in a.get("privileges", [])
+        }
+        assert "ACCESS" in granted, f"ACCESS not present after grant: {granted}"
+        print(f"App {app_name} ({app_sp}) has ACCESS on service credential {service_credential}.")
+    except Exception as e:
+        print(f"WARNING: could not grant ACCESS on {service_credential} to app {app_name}: {type(e).__name__}: {e}\n"
+              f"The Live stream tab cannot produce to Kafka until the credential owner runs:\n"
+              f"  databricks grants update credential {service_credential} "
+              f"--json '{{\"changes\":[{{\"principal\":\"{app_sp}\",\"add\":[\"ACCESS\"]}}]}}'")
 
 # COMMAND ----------
 # MAGIC %md ## 1 · Create the topic (idempotent) — temp AWS creds + Kafka AdminClient (MSK IAM)

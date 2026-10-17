@@ -240,6 +240,20 @@
 .nbo2 .loadgen .grow { flex: 1; }
 .nbo2 .mix-row { display: grid; grid-template-columns: 110px 1fr 46px; gap: 8px; align-items: center; font-size: 12px; margin: 5px 0; }
 
+/* ── Live stream ─────────────────────────────────────── */
+/* Same layout as the card fraud console's Live view (Tailwind utilities), in NBO colors. */
+.nbo2 .nbo-live {
+  --bank-ink: var(--ink); --bank-line: var(--line); --bank-green: var(--green);
+  --bank-glow: var(--bankAccent); --bank-navy: var(--navy);
+}
+/* Undo the .nbo2 element defaults so the Tailwind sizes in the view apply. */
+.nbo2 .nbo-live h1 { font-weight: 600; }
+.nbo2 .nbo-live p { line-height: 1.55; }
+.nbo2 .nbo-live button, .nbo2 .nbo-live select { font-size: 13px; }
+.nbo2 .nbo-live .tabular { font-variant-numeric: tabular-nums; }
+.nbo2 .nbo-live .nbo-flash { animation: nbo-flash 1.2s ease-out both; }
+@keyframes nbo-flash { from { background: rgba(242,177,52,.25); } to { background: transparent; } }
+
 /* ── How it works ─────────────────────────────────────── */
 .nbo2 .steps { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; }
 .nbo2 .steps button { border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 8px 12px; font-size: 12.5px; color: #374151; }

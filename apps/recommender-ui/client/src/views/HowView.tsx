@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { api, isNum, type Metrics } from '@/lib/api';
+import { api, isNum, type Live, type Metrics } from '@/lib/api';
 
 interface Step {
   t: string;
@@ -65,11 +65,11 @@ fe.create_feature(
 ] }
 <span class="c"># features are looked up server-side: zero feature code in the app</span>`, wf: true },
   { t: '5 · Observe at scale', b: 'Everything at once: streaming and batch features flowing into one online store and one serving API. The dashboard measures freshness per event and latency per request.',
-    code: 'What the dashboard reads', sub: 'GET /api/metrics in this app',
-    src: `<span class="c">-- latency + QPS</span>      timings of every /api/recommend call (app -> endpoint)
-<span class="c">-- freshness</span>          commit_time - event_time per event on the streaming online table
-<span class="c">-- offer mix</span>          top-1 category of served recommendations
-<span class="c">-- events/sec</span>         Kafka events landing in the ingestion table (last 60 s)` },
+    code: 'What the live view measures', sub: 'GET /api/live in this app',
+    src: `<span class="c">-- events/sec</span>         click events the app wrote to Kafka (MSK IAM via the UC service credential)
+<span class="c">-- event->servable</span>    each event on a fresh key -> first Feature Serving read that returns it, one clock
+<span class="c">-- feature serving</span>    warm Feature Serving round trip, live last 10 s
+<span class="c">-- serving p95</span>        ranker data-plane round trip (feature lookup + model), 5 req/s during traffic` },
 ];
 
 // Mirrors the Feature Store architecture slide.
@@ -137,13 +137,13 @@ interface Flow {
 }
 
 const ms = (v: unknown) => (isNum(v) ? `${Math.round(v)} ms` : '—');
-const sec = (v: unknown) => (isNum(v) ? `${v.toFixed(1)} s` : '—');
 
 export function HowView() {
   const [step, setStep] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [flows, setFlows] = useState<Flow[]>([]);
   const [m, setM] = useState<Metrics | null>(null);
+  const [live, setLive] = useState<Live | null>(null);
   const archRef = useRef<HTMLDivElement>(null);
   const boxRefs = useRef<Partial<Record<BoxId, HTMLDivElement | null>>>({});
 
@@ -154,11 +154,10 @@ export function HowView() {
   // Live numbers for the "measured in this app" lines and the step-4 waterfall.
   useEffect(() => {
     let alive = true;
-    const load = () =>
-      api
-        .metrics()
-        .then((d) => alive && setM(d))
-        .catch(() => undefined);
+    const load = () => {
+      api.metrics().then((d) => alive && setM(d)).catch(() => undefined);
+      api.live().then((d) => alive && setLive(d)).catch(() => undefined);
+    };
     load();
     const id = setInterval(load, 5000);
     return () => {
@@ -242,27 +241,27 @@ export function HowView() {
 
   // Step 4 compares two independently measured distributions. Do not subtract p95 server time from
   // p50 round-trip time: they are different percentiles and measurement contexts.
-  const total = m?.recommend?.p50_ms;
-  const serverP95 = m?.recommend?.p95_ms;
-  const scale = Math.max(isNum(total) ? total : 0, isNum(serverP95) ? serverP95 : 0) * 1.15 || 1;
+  const servingP50 = live?.stats.serving_p50;
+  const serverP95 = live?.stats.serving_p95;
+  const scale = Math.max(isNum(servingP50) ? servingP50 : 0, isNum(serverP95) ? serverP95 : 0) * 1.15 || 1;
   const wfRows: [string, number, number | null, string][] = [
-    ['Server model p95 (lookup + rank)', 0, isNum(serverP95) ? serverP95 : null, '#0f9d76'],
-    ['App round trip p50', 0, isNum(total) ? total : null, '#ff3621'],
+    ['Model serving p95 (lookup + rank)', 0, isNum(serverP95) ? serverP95 : null, '#0f9d76'],
+    ['Model serving p50 (lookup + rank)', 0, isNum(servingP50) ? servingP50 : null, '#ff3621'],
   ];
 
   // Show only measurements collected by this running app.
   const callouts: { n: string; t: string; live?: string }[] = [
     {
-      n: isNum(m?.freshness?.p95_s) ? sec(m.freshness.p95_s) : '—',
-      t: 'measured freshness p95',
+      n: isNum(live?.stats.served_p95) ? ms(live.stats.served_p95) : '—',
+      t: 'measured event -> servable p95',
     },
     {
       n: isNum(m?.recommend?.qps) && (m?.recommend?.count ?? 0) > 0 ? `${m.recommend.qps.toFixed(2)} req/s` : '—',
       t: 'measured recommendations per second',
     },
     {
-      n: isNum(m?.recommend?.p95_ms) ? ms(m.recommend.p95_ms) : '—',
-      t: 'measured request p95',
+      n: isNum(serverP95) ? ms(serverP95) : '—',
+      t: 'measured model serving p95',
     },
     { n: '1', t: 'definition per feature: same code trains and serves' },
   ];
@@ -386,7 +385,7 @@ export function HowView() {
                     <b className="mono">{ms(d)}</b>
                   </div>
                 ))}
-                {!isNum(total) && <div className="sub">Browse the bank site to generate traffic.</div>}
+                {!isNum(serverP95) && <div className="sub">Start live traffic on the Live stream tab to measure serving latency.</div>}
               </div>
             )}
           </div>

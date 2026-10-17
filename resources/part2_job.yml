@@ -23,6 +23,7 @@ resources:
               service_credential: ${var.service_credential}
               topic: ${var.kafka_topic}
               mode: topic
+              app_name: ${var.app_name}  # grants the app ACCESS on the service credential (Live stream tab)
 
         - task_key: streaming_feature_views
           depends_on: [{ task_key: kafka_topic }]

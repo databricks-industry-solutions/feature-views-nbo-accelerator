@@ -1,5 +1,6 @@
 import { createApp, analytics, server } from '@databricks/appkit';
-import { metrics, trafficStatus, trafficStart, trafficEnsure, trafficStop, type LiveCfg } from './realtime.js';
+import { metrics } from './realtime.js';
+import { cursorNow, lastRunSnapshot, latestFinished, pointsSince, startStream, startTraffic, stats, stopTraffic, trafficState } from './stream.js';
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
 // ---------------------------------------------------------------------------
@@ -36,8 +37,10 @@ const RANKER_ENDPOINT = process.env.RANKER_ENDPOINT ?? 'nbo-ranker-realtime';
 // streaming (Rolling + Sawtooth), and CustomUDF features, used for the "signals behind this match" panel
 // and to measure streaming freshness.
 const FEATURE_ENDPOINT = process.env.FEATURE_ENDPOINT ?? 'nbo-customer-features';
-// "Simulate live traffic": the notebook 08 continuous Kafka producer, bound to the app as a job resource.
-const TRAFFIC_JOB_ID = process.env.TRAFFIC_JOB_ID ?? '';
+// Live traffic: the app writes click events to this Kafka topic itself (MSK IAM via the UC service credential).
+const KAFKA_CONNECTION = process.env.KAFKA_CONNECTION ?? 'msk_kafka';
+const KAFKA_CREDENTIAL = process.env.KAFKA_CREDENTIAL ?? 'msk_kafka';
+const KAFKA_TOPIC = process.env.KAFKA_TOPIC ?? 'nbo-session-events';
 const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
 const FQ = `\`${CATALOG}\`.${SCHEMA}`;
 
@@ -239,10 +242,13 @@ function invalidateQueryToken(endpointId: string): void {
 }
 
 interface EndpointInfo { url: string; id: string }
+let nextFeatureEndpoint: Promise<EndpointInfo> | null = null;
+const resolveFeatureEndpoint = () => getToken().then((t) => getEndpoint(FEATURE_ENDPOINT, t));
 // Resolved on every use, never cached: the endpoint id and data-plane URL both change when an
 // endpoint is recreated, and a stale value would route every later call to a dead URL.
 async function getEndpoint(name: string, token: string): Promise<EndpointInfo> {
   const r = await fetch(`${HOST}/api/2.0/serving-endpoints/${name}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (r.status === 429) console.warn(`[endpoint-lookup] ${name} throttled (429)`);
   if (!r.ok) throw new Error(`get endpoint ${name} failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
   const d = (await r.json()) as { id?: string; data_plane_info?: { query_info?: { endpoint_url?: string } } };
   const url = d.data_plane_info?.query_info?.endpoint_url;
@@ -252,8 +258,8 @@ async function getEndpoint(name: string, token: string): Promise<EndpointInfo> {
 
 // Query a route-optimized endpoint. The token mint and endpoint lookup happen BEFORE the timer, so
 // latency_ms is only the data-plane round trip. On 401/403 the cached token is re-minted once.
-async function queryEndpoint(name: string, records: Record<string, unknown>[]): Promise<{ json: Record<string, unknown>; latencyMs: number }> {
-  const ep = await getEndpoint(name, await getToken());
+async function queryEndpoint(name: string, records: Record<string, unknown>[], resolved?: EndpointInfo): Promise<{ json: Record<string, unknown>; latencyMs: number; readAt: number }> {
+  const ep = resolved ?? await getEndpoint(name, await getToken());
   const body = JSON.stringify({ dataframe_records: records });
   const post = (t: string) => fetch(ep.url, { method: 'POST', headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' }, body });
   let token = await mintQueryToken(ep.id);
@@ -275,9 +281,11 @@ async function queryEndpoint(name: string, records: Record<string, unknown>[]): 
     t0 = Date.now();
     r = await post(token);
   }
-  const latencyMs = Date.now() - t0;
+  const t1 = Date.now();
+  const latencyMs = t1 - t0;
   if (!r.ok) throw new Error(`${name} query failed: ${r.status} ${(await r.text()).slice(0, 300)}`);
-  return { json: (await r.json()) as Record<string, unknown>, latencyMs };
+  // readAt: midpoint of the data-plane request that returned these values (not of the endpoint lookup).
+  return { json: (await r.json()) as Record<string, unknown>, latencyMs, readAt: (t0 + t1) / 2 };
 }
 
 
@@ -395,14 +403,15 @@ async function lookupProfile(customerId: string) {
   return { customer, categories, latencyMs };
 }
 
-// Jobs API calls run as the app's service principal (granted CAN_MANAGE_RUN on the traffic job through the
-// app resource binding). Stream-stats SQL runs as the signed-in user when a forwarded token is present.
-const liveCfg = (userToken?: string): LiveCfg => ({
-  host: HOST, fq: FQ, catalog: CATALOG, schema: SCHEMA, rankerEndpoint: RANKER_ENDPOINT,
-  trafficJobId: TRAFFIC_JOB_ID,
-  getToken,
-  query: async (sql: string) => queryRows(sql, userToken ?? (await getToken())),
-});
+// Real customers ranked by the serving-latency load while live traffic runs.
+let sampleCustomers: string[] = [];
+async function getSampleCustomers(): Promise<string[]> {
+  if (!sampleCustomers.length) {
+    const rows = await queryRows(`SELECT customer_id FROM ${FQ}.customers ORDER BY xxhash64(customer_id) LIMIT 50`, await getToken());
+    sampleCustomers = rows.map((r) => String(r.customer_id));
+  }
+  return sampleCustomers;
+}
 
 // Demo accounts: real customers nearest to four archetypes (tier + risk exact, income/tenure closest).
 const ARCHETYPES = [
@@ -412,10 +421,6 @@ const ARCHETYPES = [
   { key: 'sam', tier: 'silver', risk: 'medium', income: 72000, tenure: 27 },
 ];
 let accountsCache: Record<string, unknown>[] | null = null;
-let pingCustomers: string[] = [];
-let pingIndex = 0;
-let latencyTestSession = 0;
-let latencyTestRunning = false;
 
 async function callModel(messages: unknown[], system: string): Promise<Response> {
   const token = await getToken();
@@ -447,7 +452,7 @@ createApp({
     appkit.server.extend((app) => {
       // Lightweight config for the UI header (catalog/schema the app is pointed at).
       app.get('/api/config', (_req, res) => {
-        res.json({ catalog: CATALOG, schema: SCHEMA, ranker_endpoint: RANKER_ENDPOINT, feature_endpoint: FEATURE_ENDPOINT, traffic_enabled: !!TRAFFIC_JOB_ID });
+        res.json({ catalog: CATALOG, schema: SCHEMA, ranker_endpoint: RANKER_ENDPOINT, feature_endpoint: FEATURE_ENDPOINT, traffic_enabled: true });
       });
 
       // Sample customers (real data from Unity Catalog via the SQL warehouse).
@@ -511,78 +516,44 @@ createApp({
         const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string };
         try {
           const { customer, categories, latencyMs } = await lookupProfile(visitorId(b.customer_id, b.session_id));
-          metrics.profile(latencyMs);
           res.json({ customer, categories, latency_ms: latencyMs });
         } catch (e) {
           res.status(502).json({ error: String(e) });
         }
       });
 
-      // Live numbers for the scale dashboard: only what this app served and what the stream data shows.
-      app.get('/api/metrics', async (req, res) => {
-        try {
-          res.json(await metrics.snapshot(liveCfg(req.header('x-forwarded-access-token'))));
-        } catch (e) {
-          res.status(500).json({ error: String(e) });
-        }
+      // Recommendations the bank site served (count, rate, top-1 mix) and the feature-view table.
+      app.get('/api/metrics', (_req, res) => {
+        res.json(metrics.snapshot());
       });
 
-      // "Simulate live traffic": start/stop the continuous Kafka producer job (notebook 08).
-      app.get('/api/traffic', async (_req, res) => {
+      // Live traffic view, same contract as the card fraud console: stats, traffic state, recent events.
+      // `cursor` is the value returned by the previous call; the response carries every chart point resolved
+      // since then, so no point is lost between polls. `feed` is the newest 40 finished events.
+      app.get('/api/live', (req, res) => {
+        const cursor = Number(req.query.cursor ?? 0);
+        res.json({
+          server_ms: Date.now(), cursor: cursorNow(), stats: stats(), traffic: trafficState(),
+          feed: latestFinished(40), points: pointsSince(cursor),
+          // While traffic is off or the pipeline is warming, the last run's frozen numbers (server memory).
+          last_run: trafficState().running && !trafficState().warming_up ? null : lastRunSnapshot(),
+        });
+      });
+      app.get('/api/traffic', (_req, res) => {
+        res.json(trafficState());
+      });
+      app.post('/api/traffic', async (req, res) => {
+        const b = (req.body ?? {}) as { eps?: number; seconds?: number };
         try {
-          res.json(await trafficStatus(liveCfg()));
+          await startTraffic(Math.min(200, Math.max(1, Number(b.eps ?? 25))), Math.min(1800, Math.max(10, Number(b.seconds ?? 300))));
+          res.json(trafficState());
         } catch (e) {
-          res.status(502).json({ error: String(e) });
+          res.status(502).json({ error: String(e).slice(0, 300) });
         }
       });
-      app.post('/api/traffic/start', async (_req, res) => {
-        try {
-          res.json(await trafficStart(liveCfg()));
-        } catch (e) {
-          res.status(502).json({ error: String(e) });
-        }
-      });
-      app.post('/api/traffic/stop', async (_req, res) => {
-        try {
-          res.json(await trafficStop(liveCfg()));
-        } catch (e) {
-          res.status(502).json({ error: String(e) });
-        }
-      });
-
-      app.post('/api/ping/start', (_req, res) => {
-        latencyTestSession += 1;
-        latencyTestRunning = true;
-        metrics.resetLatencyMeasurement();
-        res.json({ session_id: latencyTestSession });
-      });
-
-      app.post('/api/ping/stop', (_req, res) => {
-        latencyTestRunning = false;
-        latencyTestSession += 1; // invalidate an in-flight sample
-        res.json({ stopped: true });
-      });
-
-      // One explicit, real-customer data-plane call. No background warm-up enters metrics.
-      app.post('/api/ping', async (req, res) => {
-        try {
-          const sqlToken = req.header('x-forwarded-access-token') ?? (await getToken());
-          if (!pingCustomers.length) {
-            const rows = await queryRows(
-              `SELECT customer_id FROM ${FQ}.customers ORDER BY xxhash64(customer_id) LIMIT 12`, sqlToken);
-            pingCustomers = rows.map((r) => String(r.customer_id));
-          }
-          if (!pingCustomers.length) throw new Error('No customers available for the latency test.');
-          const { session_id } = (req.body ?? {}) as { session_id?: number };
-          const result = await rankAll(pingCustomers[pingIndex++ % pingCustomers.length], {}, sqlToken);
-          if (!latencyTestRunning || session_id !== latencyTestSession) {
-            res.json({ ignored: true });
-            return;
-          }
-          res.json(metrics.latencySample(result.latencyMs));
-        } catch (e) {
-          res.status(502).json({ error: String(e) });
-        }
+      app.delete('/api/traffic', (_req, res) => {
+        stopTraffic();
+        res.json(trafficState());
       });
       app.post('/api/chat', async (req, res) => {
         const body = (req.body ?? {}) as ChatBody;
@@ -678,35 +649,27 @@ createApp({
       }
     })();
 
-    // Pre-warm the demo traffic path when the app starts. Serverless producer startup takes 60–90s;
-    // doing it here means the stream is already hot when a presenter opens the dashboard. run-now is
-    // idempotent through trafficStart (it reuses an active run), and the job self-terminates.
-    if (TRAFFIC_JOB_ID) {
-      void trafficEnsure(liveCfg())
-        .then((s) => console.log(`[warmup] traffic simulator ${s.state} run=${s.run_id ?? 'none'}`))
-        .catch((e) => console.warn('[warmup] traffic simulator skipped:', String(e).slice(0, 200)));
-    }
-
-    // Prime and continuously refresh the stream cache before the dashboard is opened. The refresh is
-    // non-blocking after the first sample; /api/metrics stays fast while SQL reconciles in background.
-    void metrics.snapshot(liveCfg())
-      .then(() => console.log('[warmup] stream metrics cache primed'))
-      .catch((e) => console.warn('[warmup] stream metrics skipped:', String(e).slice(0, 200)));
-    setInterval(() => { void metrics.snapshot(liveCfg()); }, 1_000);
-
-    // Keep the demo hot while the app is running. Endpoints scale to zero when idle and the producer
-    // job is bounded; refresh both paths before a presenter arrives.
-    // Traffic is operational plumbing and remains separate from recommendation metrics. Model Serving
-    // endpoints stay provisioned during the demo, so no synthetic rank requests are needed here.
-    setInterval(() => {
-      void (async () => {
-        try {
-          if (TRAFFIC_JOB_ID) await trafficEnsure(liveCfg());
-          console.log('[keepalive] traffic is warm');
-        } catch (e) {
-          console.warn('[keepalive] skipped:', String(e).slice(0, 200));
-        }
-      })();
-    }, 30_000);
+    // Live traffic: the app produces to Kafka and tracks each event until Feature Serving returns it.
+    // Traffic only flows after Start live traffic.
+    startStream({
+      host: HOST, getToken, connection: KAFKA_CONNECTION, credential: KAFKA_CREDENTIAL, topic: KAFKA_TOPIC,
+      lookup: async (rows) => {
+        // Every read uses an endpoint resolved by its own get() (never cached), but that get() is started
+        // while the previous read is in flight, so the control-plane call does not sit between reads.
+        const pre = nextFeatureEndpoint ?? resolveFeatureEndpoint();
+        nextFeatureEndpoint = null;
+        const w0 = Date.now();
+        const ep = await pre.catch(() => resolveFeatureEndpoint());
+        const resolveWaitMs = Date.now() - w0;
+        nextFeatureEndpoint = resolveFeatureEndpoint();
+        nextFeatureEndpoint.catch(() => undefined);
+        const { json, latencyMs, readAt } = await queryEndpoint(FEATURE_ENDPOINT, rows, ep);
+        if (resolveWaitMs > 300 || latencyMs > 300) console.warn(`[feature-read] waited ${resolveWaitMs} ms for endpoint lookup, data-plane read ${latencyMs} ms`);
+        const outputs = (Array.isArray(json.outputs) ? json.outputs : Array.isArray(json.predictions) ? json.predictions : []) as Record<string, unknown>[];
+        return { outputs, latencyMs, readAt };
+      },
+      rank: async (customerId: string) => (await rankAll(customerId, {}, await getToken())).latencyMs,
+      customers: getSampleCustomers,
+    });
   },
 }).catch(console.error);

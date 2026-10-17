@@ -15,7 +15,11 @@ resources:
           - { name: SCHEMA, value: '${var.schema}' }
           - { name: RANKER_ENDPOINT, value: '${var.ranker_realtime_endpoint}' }
           - { name: FEATURE_ENDPOINT, value: '${var.feature_serving_endpoint}' }
-          - { name: TRAFFIC_JOB_ID, value_from: traffic-job }
+          # Start live traffic: the app writes click events to this topic itself, authenticating to MSK with
+          # IAM through the UC service credential. The app service principal needs ACCESS on that credential.
+          - { name: KAFKA_CONNECTION, value: '${var.kafka_connection}' }
+          - { name: KAFKA_CREDENTIAL, value: '${var.service_credential}' }
+          - { name: KAFKA_TOPIC, value: '${var.kafka_topic}' }
           - { name: QUERY_SP_CLIENT_ID, value_from: query-sp-client-id }
           - { name: QUERY_SP_CLIENT_SECRET, value_from: query-sp-client-secret }
       user_api_scopes:
@@ -34,10 +38,6 @@ resources:
           serving_endpoint:
             name: ${var.feature_serving_endpoint}
             permission: CAN_QUERY
-        - name: traffic-job
-          job:
-            id: ${resources.jobs.nbo_traffic_simulator.id}
-            permission: CAN_MANAGE_RUN
         - name: query-sp-client-id
           secret:
             scope: ${var.query_sp_scope}

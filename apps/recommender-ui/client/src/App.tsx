@@ -8,7 +8,7 @@ import { HowView } from '@/views/HowView';
 
 const TABS: { path: string; label: string }[] = [
   { path: '/', label: '1 · Lakeshore Bank (customer view)' },
-  { path: '/dashboard', label: '2 · Scale dashboard' },
+  { path: '/dashboard', label: '2 · Live stream' },
   { path: '/how', label: '3 · How it works' },
 ];
 
