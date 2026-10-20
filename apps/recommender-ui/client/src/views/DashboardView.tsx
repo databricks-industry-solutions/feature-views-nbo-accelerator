@@ -79,7 +79,10 @@ export function DashboardView() {
     setBusy(true);
     try {
       if (live?.traffic.running) await api.trafficStop();
-      else await api.trafficStart(eps, 600);
+      else {
+        await api.trafficStart(eps, 600);
+        points.current.clear();
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -87,14 +90,13 @@ export function DashboardView() {
   };
 
   // While traffic is off, show the last run's frozen numbers (kept on the server) instead of empty tiles.
+  // During warm-up show nothing old, so a fresh start never looks like the previous run.
   const warming = !!live?.traffic.running && !!live?.traffic.warming_up;
-  const last = !live?.traffic.running || warming ? live?.last_run ?? null : null;
-  const s = last?.stats ?? live?.stats;
-  const feed = useMemo(() => last?.feed ?? live?.feed ?? [], [live, last]);
+  const last = !live?.traffic.running ? live?.last_run ?? null : null;
+  const s = warming ? undefined : last?.stats ?? live?.stats;
+  const feed = useMemo(() => (warming ? [] : last?.feed ?? live?.feed ?? []), [live, last, warming]);
   const ago = last ? Math.max(0, Math.round((Date.now() - last.ended_at) / 60_000)) : 0;
-  const lastLabel = !last ? '' : warming
-    ? `warming the pipeline · measuring in ${live?.traffic.warm_left_s ?? 0}s · last run shown`
-    : `last run at ${last.eps}/s · ended ${ago ? `${ago} min ago` : 'just now'}`;
+  const lastLabel = !last ? '' : `last run at ${last.eps}/s · ended ${ago ? `${ago} min ago` : 'just now'}`;
   const liveFeatureP95 = s?.feature_serving_p95 ?? null;
   const baselineFeatureP95 = s?.feature_serving_baseline_p95 ?? null;
   const shownFeatureP95 = liveFeatureP95 ?? baselineFeatureP95;
@@ -151,7 +153,7 @@ export function DashboardView() {
         <Kpi icon={<Radio size={13} />} label="Events sent" value={s ? s.events_per_s.toFixed(1) : '—'} sub={warming ? warmNote : live?.traffic.running ? `per second · ${live.traffic.ends_in_s}s left` : last ? `per second · ${lastLabel}` : 'per second · traffic stopped'} />
         <Kpi icon={<Gauge size={13} />} label="Warm Feature Serving p95" value={ms(shownFeatureP95)} sub={featureLatencySub} />
         <Kpi icon={<Zap size={13} />} label="Event -> servable p95" value={ms(s?.served_p95)} sub={warming && !last ? warmNote : last ? `end-to-end · p50 ${ms(s?.served_p50)} · ${lastLabel}` : `end-to-end · p50 ${ms(s?.served_p50)} · ${s?.pending ?? 0} in flight · first read that returned it`} accent="var(--bank-green)" />
-        <Kpi icon={<Gauge size={13} />} label="In flight" value={last ? '0' : s ? String(s.pending) : '—'} sub={`${s?.n ?? 0} served · ${s?.missing ?? 0} missing, ${last ? 'last 60 s of last run' : 'last 60 s'}`} />
+        <Kpi icon={<Gauge size={13} />} label="In flight" value={last ? '0' : s ? String(s.pending) : '—'} sub={warming ? warmNote : `${s?.n ?? 0} served · ${s?.missing ?? 0} missing, ${last ? 'last 60 s of last run' : 'last 60 s'}`} />
       </div>
 
       <div className="mt-3 rounded-2xl border border-[var(--bank-line)] bg-white p-4 shadow-sm">
@@ -188,7 +190,7 @@ export function DashboardView() {
               </tr>
             )))}
             {!feed.length && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-neutral-400">Start live traffic to stream click events.</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-neutral-400">{warming ? `Warming the pipeline. Measured events start in ${live?.traffic.warm_left_s ?? 0}s.` : 'Start live traffic to stream click events.'}</td></tr>
             )}
           </tbody>
         </table>
