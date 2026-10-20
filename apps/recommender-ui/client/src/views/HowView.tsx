@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { api, isNum, type Live, type Metrics } from '@/lib/api';
 
 interface Step {
   t: string;
@@ -7,7 +6,6 @@ interface Step {
   code: string;
   sub: string;
   src: string;
-  wf?: boolean;
 }
 
 // Static architecture copy + code snippets, ported verbatim from the mock (fixed constants).
@@ -63,7 +61,7 @@ fe.create_feature(
     { <span class="s">"customer_id"</span>: <span class="s">"cust_42"</span>, <span class="s">"offer_id"</span>: <span class="s">"offer_17"</span> },
     <span class="c">... one row per offer</span>
 ] }
-<span class="c"># features are looked up server-side: zero feature code in the app</span>`, wf: true },
+<span class="c"># features are looked up server-side: zero feature code in the app</span>` },
   { t: '5 · Observe at scale', b: 'Everything at once: streaming and batch features flowing into one online store and one serving API. The dashboard measures freshness per event and latency per request.',
     code: 'What the live view measures', sub: 'GET /api/live in this app',
     src: `<span class="c">-- events/sec</span>         click events the app wrote to Kafka (MSK IAM via the UC service credential)
@@ -136,35 +134,16 @@ interface Flow {
   label?: { text: string; x: number; y: number };
 }
 
-const ms = (v: unknown) => (isNum(v) ? `${Math.round(v)} ms` : '—');
-
 export function HowView() {
   const [step, setStep] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [flows, setFlows] = useState<Flow[]>([]);
-  const [m, setM] = useState<Metrics | null>(null);
-  const [live, setLive] = useState<Live | null>(null);
   const archRef = useRef<HTMLDivElement>(null);
   const boxRefs = useRef<Partial<Record<BoxId, HTMLDivElement | null>>>({});
 
   const st = step + 1;
   const ends = new Set(EDGES.filter((e) => e.steps.includes(st)).flatMap((e) => [e.f, e.t]));
   const s = STEPS[step];
-
-  // Live numbers for the "measured in this app" lines and the step-4 waterfall.
-  useEffect(() => {
-    let alive = true;
-    const load = () => {
-      api.metrics().then((d) => alive && setM(d)).catch(() => undefined);
-      api.live().then((d) => alive && setLive(d)).catch(() => undefined);
-    };
-    load();
-    const id = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, []);
 
   useEffect(() => {
     if (!playing) return;
@@ -239,34 +218,7 @@ export function HowView() {
     </div>
   );
 
-  // Step 4 compares two independently measured distributions. Do not subtract p95 server time from
-  // p50 round-trip time: they are different percentiles and measurement contexts.
-  const servingP50 = live?.stats.serving_p50;
-  const serverP95 = live?.stats.serving_p95;
-  const scale = Math.max(isNum(servingP50) ? servingP50 : 0, isNum(serverP95) ? serverP95 : 0) * 1.15 || 1;
-  const wfRows: [string, number, number | null, string][] = [
-    ['Model serving p95 (lookup + rank)', 0, isNum(serverP95) ? serverP95 : null, '#0f9d76'],
-    ['Model serving p50 (lookup + rank)', 0, isNum(servingP50) ? servingP50 : null, '#ff3621'],
-  ];
-
-  // Show only measurements collected by this running app.
-  const callouts: { n: string; t: string; live?: string }[] = [
-    {
-      n: isNum(live?.stats.served_p95) ? ms(live.stats.served_p95) : '—',
-      t: 'measured event -> servable p95',
-    },
-    {
-      n: isNum(m?.recommend?.qps) && (m?.recommend?.count ?? 0) > 0 ? `${m.recommend.qps.toFixed(2)} req/s` : '—',
-      t: 'measured recommendations per second',
-    },
-    {
-      n: isNum(serverP95) ? ms(serverP95) : '—',
-      t: 'measured model serving p95',
-    },
-    { n: '1', t: 'definition per feature: same code trains and serves' },
-  ];
-
-  return (
+   return (
     <section>
       <div className="wrap">
         <div className="dash-h">
@@ -371,43 +323,12 @@ export function HowView() {
           <div className="card">
             <h3>{s.t}</h3>
             <p>{s.b}</p>
-            {s.wf && (
-              <div className="wf">
-                <div className="sub" style={{ marginTop: 12 }}>
-                  Request waterfall (live p50, measured in this app)
-                </div>
-                {wfRows.map(([l, s0, d, c]) => (
-                  <div key={l} className="wf-row">
-                    <span>{l}</span>
-                    <span className="wf-track">
-                      {d != null && <i style={{ left: `${(s0 / scale) * 100}%`, width: `${(d / scale) * 100}%`, background: c }} />}
-                    </span>
-                    <b className="mono">{ms(d)}</b>
-                  </div>
-                ))}
-                {!isNum(serverP95) && <div className="sub">Start live traffic on the Live stream tab to measure serving latency.</div>}
-              </div>
-            )}
           </div>
           <div className="card">
             <h3>{s.code}</h3>
             <div className="sub">{s.sub}</div>
             <pre className="code" dangerouslySetInnerHTML={{ __html: s.src }} />
           </div>
-        </div>
-        <div className="callouts">
-          {callouts.map((c) => (
-            <div key={c.t} className="callout">
-              <div className="k">Platform capability</div>
-              <div className="n">{c.n}</div>
-              <div className="t">{c.t}</div>
-              {c.live && (
-                <div className="live-m">
-                  Measured in this app: <b>{c.live}</b>
-                </div>
-              )}
-            </div>
-          ))}
         </div>
       </div>
     </section>
