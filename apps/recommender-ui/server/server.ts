@@ -272,12 +272,14 @@ async function queryEndpoint(name: string, records: Record<string, unknown>[], r
     r = await post(token);
   }
   // After an idle period the endpoint's feature-lookup client can reuse Lakebase connections the server already
-  // closed ("SSL error: unexpected eof" / "connection is lost"); each serving worker fails once, then reconnects.
-  // Retry only that transient error, up to twice, and report the latency of the call that succeeded.
-  for (let attempt = 0; r.status === 400 && attempt < 2; attempt += 1) {
+  // closed ("SSL error: unexpected eof", "SSL connection has been closed unexpectedly",
+  // "connection is lost"). Each pooled connection fails once, then reconnects.
+  // Retry only that transient error, up to 4 times, and report the latency of the call that succeeded.
+  for (let attempt = 0; r.status === 400 && attempt < 4; attempt += 1) {
     const text = await r.clone().text();
-    if (!/SSL error|connection is lost|server closed the connection/i.test(text)) break;
-    console.warn(`[${name}] transient lookup connection error, retrying (${attempt + 1}/2)`);
+    if (!/SSL error|SSL connection has been closed|connection is lost|server closed the connection/i.test(text)) break;
+    console.warn(`[${name}] transient lookup connection error, retrying (${attempt + 1}/4)`);
+    await new Promise((done) => setTimeout(done, 100 * (attempt + 1)));
     t0 = Date.now();
     r = await post(token);
   }
