@@ -13,6 +13,8 @@ export interface AppConfig {
   ranker_endpoint: string;
   feature_endpoint: string;
   traffic_enabled: boolean;
+  workspace_host?: string;
+  files_path?: string;
 }
 
 export interface Account {

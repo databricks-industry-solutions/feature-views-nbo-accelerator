@@ -112,17 +112,12 @@ try:
     print("Streaming feature cust_clicks_10m already exists.")
 except Exception:
     clicks_10m = fe.create_feature(
-        name="cust_clicks_10m",
-        source=stream_source,
-        entity=["value.customer_id"],
+        name="cust_clicks_10m", source=stream_source, entity=["value.customer_id"],
         timeseries_column="value.event_time",
         function=AggregationFunction(
             operator=Count(input="value.event_id"),
-            time_window=RollingWindow(window_duration=timedelta(minutes=10)),
-        ),
-        catalog_name=catalog,
-        schema_name=schema,
-    )
+            time_window=RollingWindow(window_duration=timedelta(minutes=10))),
+        catalog_name=catalog, schema_name=schema)
     print("Created streaming feature cust_clicks_10m.")
 
 # Per-category intent, keyed on (customer_id, product_category). At serving, each request row already
@@ -136,8 +131,9 @@ except Exception:
     cat_views_10m = fe.create_feature(
         name="cust_cat_views_10m", source=stream_source, entity=CAT_KEYS,
         timeseries_column="value.event_time",
-        function=AggregationFunction(operator=Count(input="value.event_id"),
-                                     time_window=RollingWindow(window_duration=timedelta(minutes=10))),
+        function=AggregationFunction(
+            operator=Count(input="value.event_id"),
+            time_window=RollingWindow(window_duration=timedelta(minutes=10))),
         catalog_name=catalog, schema_name=schema)
     print("Created streaming feature cust_cat_views_10m.")
 
@@ -151,8 +147,9 @@ except Exception:
     mobile_cat_views_10m = fe.create_feature(
         name="cust_mobile_cat_views_10m", source=mobile_source, entity=CAT_KEYS,
         timeseries_column="value.event_time",
-        function=AggregationFunction(operator=Count(input="value.event_id"),
-                                     time_window=RollingWindow(window_duration=timedelta(minutes=10))),
+        function=AggregationFunction(
+            operator=Count(input="value.event_id"),
+            time_window=RollingWindow(window_duration=timedelta(minutes=10))),
         catalog_name=catalog, schema_name=schema)
     print("Created streaming feature cust_mobile_cat_views_10m.")
 
@@ -169,8 +166,9 @@ try:
         cat_views_30d = fe.create_feature(
             name="cust_cat_views_30d", source=stream_source, entity=CAT_KEYS,
             timeseries_column="value.event_time",
-            function=AggregationFunction(operator=Count(input="value.event_id"),
-                                         time_window=SawtoothWindow(window_duration=timedelta(days=30))),
+            function=AggregationFunction(
+                operator=Count(input="value.event_id"),
+                time_window=SawtoothWindow(window_duration=timedelta(days=30))),
             catalog_name=catalog, schema_name=schema)
         print("Created Sawtooth feature cust_cat_views_30d.")
 except ImportError:

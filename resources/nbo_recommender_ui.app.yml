@@ -20,6 +20,8 @@ resources:
           - { name: KAFKA_CONNECTION, value: '${var.kafka_connection}' }
           - { name: KAFKA_CREDENTIAL, value: '${var.service_credential}' }
           - { name: KAFKA_TOPIC, value: '${var.kafka_topic}' }
+          # How it works links each code excerpt to the file this bundle deployed.
+          - { name: FILES_PATH, value: '${workspace.file_path}' }
           - { name: QUERY_SP_CLIENT_ID, value_from: query-sp-client-id }
           - { name: QUERY_SP_CLIENT_SECRET, value_from: query-sp-client-secret }
       user_api_scopes:

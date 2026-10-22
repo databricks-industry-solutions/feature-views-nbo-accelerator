@@ -1,73 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useOutletContext } from 'react-router';
+import type { ShellContext } from '@/App';
+import { SNIPPETS, workspaceUrl } from '@/lib/code';
 
 interface Step {
   t: string;
   b: string;
-  code: string;
-  sub: string;
-  src: string;
 }
 
-// Static architecture copy + code snippets, ported verbatim from the mock (fixed constants).
+// The code for each step is real: lib/code.ts cuts it from the accelerator's files (see SNIPPETS).
 const STEPS: Step[] = [
-  { t: '1 · Batch features', b: 'Batch features read Delta tables in the Lakehouse with Sliding and Tumbling windows or a latest value, and are materialized to Lakebase, the online store. Each one is a single Feature(...) definition that both training and serving use.',
-    code: 'Batch window feature', sub: 'notebooks/part1_feature_views/02_define_feature_views.py',
-    src: `fe.create_feature(
-    source=txn_source, entity=[<span class="s">"customer_id"</span>], timeseries_column=<span class="s">"ts"</span>,
-    function=AggregationFunction(operator=Avg(input=<span class="s">"balance"</span>),
-        time_window=SlidingWindow(window_duration=timedelta(days=30),
-                                  slide_duration=timedelta(days=1))),
-    catalog_name=catalog, schema_name=schema, name=<span class="s">"cust_avg_balance_30d"</span>)` },
-  { t: '2 · Streaming features', b: 'Mobile-app activity and other channels land in Kafka. The Aggregation Engine (Real-Time Mode) maintains Rolling and Sawtooth windows and writes them straight to Lakebase in about 100 ms. The same stream also lands in the Lakehouse for backfills, online store compaction, and training. Clicks on this website need no stream: the site sends them with the request.',
-    code: 'Streaming features from Kafka: Rolling + NEW Sawtooth', sub: 'notebooks/part2_realtime_two_stage/07_streaming_feature_views.py',
-    src: `stream_source = StreamSource(full_name=<span class="s">f"{catalog}.{schema}.session_events_stream"</span>)
-
-<span class="c"># short window: what is this customer doing right now?</span>
-fe.create_feature(source=stream_source, entity=[<span class="s">"value.customer_id"</span>],
-    timeseries_column=<span class="s">"value.event_time"</span>,
-    function=AggregationFunction(operator=Count(input=<span class="s">"value.event_id"</span>),
-        time_window=RollingWindow(window_duration=timedelta(minutes=10))),
-    catalog_name=catalog, schema_name=schema, name=<span class="s">"cust_clicks_10m"</span>)
-
-<span class="c"># NEW (Beta): long window on a stream, fresh at the leading edge,</span>
-<span class="c"># ~2 days of live state instead of 30 (rest from the ingestion table)</span>
-fe.create_feature(source=stream_source, entity=[<span class="s">"value.customer_id"</span>],
-    timeseries_column=<span class="s">"value.event_time"</span>,
-    function=AggregationFunction(operator=Count(input=<span class="s">"value.event_id"</span>),
-        time_window=SawtoothWindow(window_duration=timedelta(days=30))),
-    catalog_name=catalog, schema_name=schema, name=<span class="s">"cust_product_views_30d"</span>)` },
-  { t: '3 · Train point-in-time correct', b: 'create_training_set joins every feature from the Lakehouse as of each label timestamp, so the model never sees the future. The model is logged with feature lineage and registered in Unity Catalog.',
-    code: 'Training set + lineage', sub: 'notebooks/part1_feature_views/04_train_ranker.py',
-    src: `training_set = fe.create_training_set(
-    df=labels, features=features, label=<span class="s">"accepted"</span>,
-    exclude_columns=[<span class="s">"record_id"</span>, <span class="s">"ts"</span>])
-
-fe.log_model(model=ranker, artifact_path=<span class="s">"ranker"</span>,
-    flavor=mlflow.sklearn, training_set=training_set,
-    registered_model_name=<span class="s">f"{catalog}.{schema}.nbo_ranker"</span>)` },
-  { t: '4 · Serve one request', b: 'The app calls deployment.predict with only customer_id, the offers, the visitor\'s answers, and their clicks this visit (request-time features). The Feature Serving Endpoint fetches batch and streaming features from Lakebase by key, computes CustomUDF features on demand, and the ranker returns P(accept) per offer.',
-    code: 'Request + a CustomUDF computed at serving', sub: 'POST data-plane URL, OAuth token scoped to the endpoint',
-    src: `<span class="c"># NEW (Beta): CustomUDF over upstream features, computed on demand at serving</span>
-fe.create_feature(
-    source=FeatureViewSource(features=[spend_90d, annual_income]),
-    function=CustomUDF(function_name=<span class="s">f"{catalog}.{schema}.spend_to_income"</span>,
-        input_bindings={<span class="s">"spend"</span>: spend_90d.full_name, <span class="s">"income"</span>: annual_income.full_name}),
-    catalog_name=catalog, schema_name=schema, name=<span class="s">"cust_spend_to_income"</span>)
-
-<span class="c"># the app's request: no feature code, only keys and request-time inputs</span>
-{ <span class="s">"dataframe_records"</span>: [
-    { <span class="s">"customer_id"</span>: <span class="s">"cust_42"</span>, <span class="s">"offer_id"</span>: <span class="s">"offer_25"</span>,
-      <span class="s">"ctx_goal"</span>: <span class="s">"mortgage"</span>, <span class="s">"ctx_session_cat_views"</span>: 2 },
-    { <span class="s">"customer_id"</span>: <span class="s">"cust_42"</span>, <span class="s">"offer_id"</span>: <span class="s">"offer_17"</span> },
-    <span class="c">... one row per offer</span>
-] }
-<span class="c"># features are looked up server-side: zero feature code in the app</span>` },
-  { t: '5 · Observe at scale', b: 'Everything at once: streaming and batch features flowing into one online store and one serving API. The dashboard measures freshness per event and latency per request.',
-    code: 'What the live view measures', sub: 'GET /api/live in this app',
-    src: `<span class="c">-- events/sec</span>         click events the app wrote to Kafka (MSK IAM via the UC service credential)
-<span class="c">-- event->servable</span>    each event on a fresh key -> first Feature Serving read that returns it, one clock
-<span class="c">-- feature serving</span>    warm Feature Serving round trip, live last 10 s
-<span class="c">-- serving p95</span>        ranker data-plane round trip (feature lookup + model), 5 req/s during traffic` },
+  { t: '1 · Batch features', b: 'Batch features read Delta tables in the Lakehouse with Sliding and Tumbling windows or a latest value, and are materialized to Lakebase, the online store. Each one is a single Feature(...) definition that both training and serving use.' },
+  { t: '2 · Streaming features', b: 'Mobile-app activity and other channels land in Kafka. The Aggregation Engine (Real-Time Mode) maintains Rolling and Sawtooth windows and writes them straight to Lakebase in about 100 ms. The same stream also lands in the Lakehouse for backfills, online store compaction, and training. Clicks on this website need no stream: the site sends them with the request.' },
+  { t: '3 · Train point-in-time correct', b: 'create_training_set joins every feature from the Lakehouse as of each label timestamp, so the model never sees the future. The model is logged with feature lineage and registered in Unity Catalog.' },
+  { t: '4 · Serve one request', b: 'The app sends only customer_id, the offers, the visitor\'s answers, and their clicks this visit (request-time features). The route-optimized endpoint fetches batch and streaming features from Lakebase by key, computes CustomUDF features on demand, and the ranker returns P(accept) per offer.' },
+  { t: '5 · Observe at scale', b: 'Everything at once: streaming and batch features flowing into one online store and one serving API. The Live stream tab times each event from Kafka to the first Feature Serving read that returns it.' },
 ];
 
 // Mirrors the Feature Store architecture slide.
@@ -102,6 +49,12 @@ const RIGHT: BoxDef[] = [
   { id: 'train', s: [3, 5], b: 'Training', span: 'point-in-time training sets', cls: 'dst' },
 ];
 
+// Clicking a box shows the code that builds it.
+const BOX_CODE: Record<BoxId, string> = {
+  stream: 'stream-produce', lhdata: 'source-data', rtm: 'stream-rolling', lakebase: 'batch-materialize',
+  fse: 'serve-fse', lakehouse: 'batch-define', infer: 'serve-ranker', train: 'train-set',
+};
+
 // Red = streaming features, dark = batch features. Only the current step's links are drawn.
 interface EdgeDef {
   f: BoxId;
@@ -135,7 +88,9 @@ interface Flow {
 }
 
 export function HowView() {
+  const { config } = useOutletContext<ShellContext>();
   const [step, setStep] = useState(0);
+  const [snipId, setSnipId] = useState(SNIPPETS[0].id);
   const [playing, setPlaying] = useState(false);
   const [flows, setFlows] = useState<Flow[]>([]);
   const archRef = useRef<HTMLDivElement>(null);
@@ -144,6 +99,17 @@ export function HowView() {
   const st = step + 1;
   const ends = new Set(EDGES.filter((e) => e.steps.includes(st)).flatMap((e) => [e.f, e.t]));
   const s = STEPS[step];
+  const stepCode = SNIPPETS.filter((x) => x.step === step);
+  // A step change (buttons, auto-play) falls back to the step's first excerpt; a box click picks its own.
+  const code = stepCode.find((x) => x.id === snipId) ?? stepCode[0];
+  const codeUrl = workspaceUrl(config, code.file);
+  const showCode = (id: BoxId) => {
+    const target = SNIPPETS.find((x) => x.id === BOX_CODE[id]);
+    if (!target) return;
+    setPlaying(false);
+    setStep(target.step);
+    setSnipId(target.id);
+  };
 
   useEffect(() => {
     if (!playing) return;
@@ -211,7 +177,14 @@ export function HowView() {
       ref={(el) => {
         boxRefs.current[x.id] = el;
       }}
-      className={`box${x.cls ? ` ${x.cls}` : ''}${x.s.includes(st) || ends.has(x.id) ? ' hot' : ''}`}
+      className={`box${x.cls ? ` ${x.cls}` : ''}${x.s.includes(st) || ends.has(x.id) ? ' hot' : ''}${BOX_CODE[x.id] === code.id ? ' sel' : ''}`}
+      role="button"
+      tabIndex={0}
+      title="Show the code"
+      onClick={() => showCode(x.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') showCode(x.id);
+      }}
     >
       <b>{x.b}</b>
       <span>{x.span}</span>
@@ -224,7 +197,7 @@ export function HowView() {
         <div className="dash-h">
           <div>
             <h1>How it works</h1>
-            <p>Click through one recommendation, end to end. Each step highlights what runs where.</p>
+            <p>Click through one recommendation, end to end. Each step highlights what runs where; click any box to see the code that builds it.</p>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <button className="btn ghost" onClick={() => setPlaying((p) => !p)}>
@@ -325,9 +298,25 @@ export function HowView() {
             <p>{s.b}</p>
           </div>
           <div className="card">
-            <h3>{s.code}</h3>
-            <div className="sub">{s.sub}</div>
-            <pre className="code" dangerouslySetInnerHTML={{ __html: s.src }} />
+            <h3>The code</h3>
+            <div className="code-tabs">
+              {stepCode.map((x) => (
+                <button key={x.id} className={x.id === code.id ? 'on' : ''} onClick={() => setSnipId(x.id)}>
+                  {x.label}
+                </button>
+              ))}
+            </div>
+            <div className="code-file">
+              <span>
+                {code.file}, line {code.line}
+              </span>
+              {codeUrl && (
+                <a href={codeUrl} target="_blank" rel="noreferrer">
+                  Open in workspace
+                </a>
+              )}
+            </div>
+            <pre className="code" dangerouslySetInnerHTML={{ __html: code.html }} />
           </div>
         </div>
       </div>

@@ -41,6 +41,8 @@ const FEATURE_ENDPOINT = process.env.FEATURE_ENDPOINT ?? 'nbo-customer-features'
 const KAFKA_CONNECTION = process.env.KAFKA_CONNECTION ?? 'msk_kafka';
 const KAFKA_CREDENTIAL = process.env.KAFKA_CREDENTIAL ?? 'msk_kafka';
 const KAFKA_TOPIC = process.env.KAFKA_TOPIC ?? 'nbo-session-events';
+// Workspace folder holding this bundle's files, for the "Open in workspace" links on How it works.
+const FILES_PATH = (process.env.FILES_PATH ?? '').replace(/\/+$/, '');
 const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
 const FQ = `\`${CATALOG}\`.${SCHEMA}`;
 
@@ -454,7 +456,10 @@ createApp({
     appkit.server.extend((app) => {
       // Lightweight config for the UI header (catalog/schema the app is pointed at).
       app.get('/api/config', (_req, res) => {
-        res.json({ catalog: CATALOG, schema: SCHEMA, ranker_endpoint: RANKER_ENDPOINT, feature_endpoint: FEATURE_ENDPOINT, traffic_enabled: true });
+        res.json({
+          catalog: CATALOG, schema: SCHEMA, ranker_endpoint: RANKER_ENDPOINT, feature_endpoint: FEATURE_ENDPOINT, traffic_enabled: true,
+          workspace_host: HOST, files_path: FILES_PATH,
+        });
       });
 
       // Sample customers (real data from Unity Catalog via the SQL warehouse).

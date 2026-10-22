@@ -29,6 +29,7 @@ function Shell() {
   const onDash = loc.pathname.startsWith('/dashboard');
   const onHow = loc.pathname.startsWith('/how');
   const onBank = !onDash && !onHow;
+  const isOn = (path: string) => (path === '/' ? onBank : loc.pathname.startsWith(path));
   const ctx: ShellContext = { config };
 
   return (
@@ -42,7 +43,7 @@ function Shell() {
           {TABS.map((t) => (
             <button
               key={t.path}
-              className={`tab${(t.path === '/' ? onBank : t.path === '/dashboard' ? onDash : onHow) ? ' on' : ''}`}
+              className={`tab${isOn(t.path) ? ' on' : ''}`}
               onClick={() => {
                 nav(t.path);
                 window.scrollTo(0, 0);
