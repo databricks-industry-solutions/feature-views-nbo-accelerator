@@ -113,7 +113,8 @@ from databricks.sdk.service.serving import (
     ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel,
 )
 w = WorkspaceClient()
-served = [ServedEntityInput(entity_name=SPEC, workload_size="Small", scale_to_zero_enabled=False)]
+# Scale to zero limits idle cost; the app keeps the endpoint warm while it runs.
+served = [ServedEntityInput(entity_name=SPEC, workload_size="Small", scale_to_zero_enabled=True)]
 if ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
     w.serving_endpoints.update_config(name=ENDPOINT, served_entities=served)
 else:

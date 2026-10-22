@@ -450,6 +450,37 @@ async function callModel(messages: unknown[], system: string): Promise<Response>
   });
 }
 
+// Keep both endpoints warm while the app runs, as the card fraud console does: one call to each at boot and
+// every 3 minutes, and a fresh one before a visitor request if the last is older than that. The endpoints keep
+// scale-to-zero on, so they only scale down once the app is stopped (demo paused).
+const KEEP_WARM_MS = 3 * 60_000;
+const servingWarm: { status: 'WARMING' | 'READY' | 'ERROR'; at: number | null; error: string | null } = {
+  status: 'WARMING', at: null, error: null,
+};
+let warming: Promise<void> | null = null;
+function warmServing(): Promise<void> {
+  if (warming) return warming;
+  servingWarm.status = 'WARMING';
+  warming = (async () => {
+    const [customer] = await getSampleCustomers();
+    await Promise.all([rankAll(customer ?? '__warmup_0__', {}, await getToken()), lookupProfile('__warmup_0__')]);
+  })().then(() => {
+    servingWarm.status = 'READY';
+    servingWarm.at = Date.now();
+    servingWarm.error = null;
+  }).catch((error) => {
+    servingWarm.status = 'ERROR';
+    servingWarm.error = String(error).slice(0, 300);
+    throw error;
+  }).finally(() => { warming = null; });
+  return warming;
+}
+async function ensureServingWarm() {
+  if (servingWarm.status === 'READY' && servingWarm.at && Date.now() - servingWarm.at < KEEP_WARM_MS) return;
+  // A failed warm call should not fail the visitor's request; the request itself reports any real error.
+  await warmServing().catch(() => undefined);
+}
+
 createApp({
   plugins: [analytics(), server()],
   async onPluginsReady(appkit) {
@@ -514,6 +545,7 @@ createApp({
       app.post('/api/recommend', async (req, res) => {
         const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string; ctx?: Ctx };
         try {
+          await ensureServingWarm();
           const sqlToken = req.header('x-forwarded-access-token') ?? (await getToken());
           const { scored, latencyMs } = await rankAll(visitorId(b.customer_id, b.session_id), b.ctx ?? {}, sqlToken);
           metrics.recommendation(String(scored[0]?.product_category ?? ''));
@@ -527,6 +559,7 @@ createApp({
       app.post('/api/profile', async (req, res) => {
         const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string };
         try {
+          await ensureServingWarm();
           const { customer, categories, latencyMs } = await lookupProfile(visitorId(b.customer_id, b.session_id));
           res.json({ customer, categories, latency_ms: latencyMs });
         } catch (e) {
@@ -659,7 +692,9 @@ createApp({
       } catch (e) {
         console.warn('[warmup] feature endpoint skipped:', String(e).slice(0, 200));
       }
+      await warmServing().catch((e) => console.warn('[warmup] keep-warm call failed:', String(e).slice(0, 200)));
     })();
+    setInterval(() => void warmServing().catch((e) => console.warn('[warmup] keep-warm call failed:', String(e).slice(0, 200))), KEEP_WARM_MS);
 
     // Live traffic: the app produces to Kafka and tracks each event until Feature Serving returns it.
     // Traffic only flows after Start live traffic.
