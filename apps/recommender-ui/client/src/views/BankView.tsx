@@ -593,6 +593,10 @@ export function BankView(_props: { config: AppConfig | null }) {
             <b>3</b>Matches update as you explore
           </div>
         </div>
+        <div className="demo-note">
+          Demo data · Lakeshore Bank, its customers, and its offers are synthetic. Your clicks on this site are real and
+          rerank your offers as you browse.
+        </div>
       </div>
     );
   } else if (loading || (!top && !err)) {

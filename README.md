@@ -11,7 +11,9 @@ This accelerator uses **Mosaic AI Feature Engineering**, **Lakebase**, **Model S
 definitions.
 
 All data is synthetic and generated deterministically in the included notebooks. No customer data
-or PII is included.
+or PII is included. The app's Live stream tab also generates its click events: each one is a
+synthetic visitor click the app writes to Kafka. The only real clicks are a visitor's own clicks
+on the Lakeshore Bank tab, which rerank their offers live.
 
 ## Business story
 
