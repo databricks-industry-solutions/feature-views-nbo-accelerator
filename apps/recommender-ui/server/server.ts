@@ -1,6 +1,6 @@
 import { createApp, analytics, server } from '@databricks/appkit';
 import { metrics } from './realtime.js';
-import { cursorNow, lastRunSnapshot, latestFinished, pointsSince, startStream, startTraffic, stats, stopTraffic, trafficState } from './stream.js';
+import { cursorNow, lastRunSnapshot, latestFinished, pointsSince, startStream, startTraffic, stats, stopTraffic, touch, trafficState } from './stream.js';
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
 // ---------------------------------------------------------------------------
@@ -454,6 +454,11 @@ createApp({
   plugins: [analytics(), server()],
   async onPluginsReady(appkit) {
     appkit.server.extend((app) => {
+      // Any browser request marks the app as in use, which keeps the live pipeline warm (stream.ts keepWarm).
+      app.use('/api', (_req, _res, next) => {
+        touch();
+        next();
+      });
       // Lightweight config for the UI header (catalog/schema the app is pointed at).
       app.get('/api/config', (_req, res) => {
         res.json({
@@ -552,7 +557,7 @@ createApp({
       app.post('/api/traffic', async (req, res) => {
         const b = (req.body ?? {}) as { eps?: number; seconds?: number };
         try {
-          await startTraffic(Math.min(200, Math.max(1, Number(b.eps ?? 25))), Math.min(1800, Math.max(10, Number(b.seconds ?? 300))));
+          await startTraffic(Math.min(1000, Math.max(1, Number(b.eps ?? 25))), Math.min(1800, Math.max(10, Number(b.seconds ?? 300))));
           res.json(trafficState());
         } catch (e) {
           res.status(502).json({ error: String(e).slice(0, 300) });

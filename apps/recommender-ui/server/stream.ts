@@ -63,6 +63,16 @@ const MISSING_AFTER_MS = 30_000;
 // otherwise shows a 1-3 s Kafka -> RTM catch-up in its first seconds (seen at 00:44:08 UTC, 2026-10-17).
 const WARMUP_MS = 10_000;
 const RANK_EVERY_MS = 700; // same cadence as the fraud console's scoring sampler
+// Above this rate, each extra event is plain load: sent to Kafka on a repeat-visitor key, not timed.
+// Timing every event at 1,000/s would mean ~100k chart points and a Feature Serving read for each.
+const MEASURED_EPS = 100;
+const LOAD_KEYS = 2_000;
+const KAFKA_WARM_TIMEOUT_MS = 15_000;
+const KAFKA_DIAG = /retr|leader|throttl|timed? ?out|disconnect|reconnect|connecting|refresh|ECONN|ETIMEDOUT|authenticat/i;
+// Keep-warm: while someone has the app open, a trickle of untracked events keeps the Kafka connections and the
+// RTM pipelines hot, so Start measures from its first second.
+const KEEP_WARM_IDLE_MS = 3 * 60_000; // stop this long after the last browser request
+const KEEP_WARM_READ_EVERY_MS = 2_000;
 const BASELINE_WARMUPS = 12;
 const BASELINE_CALLS = 40;
 const BASELINE_EVERY_MS = 10 * 60_000;
@@ -111,7 +121,14 @@ async function producer(d: StreamDeps): Promise<Producer> {
       clientId: 'nbo-recommender-ui',
       brokers,
       ssl: true,
-      logLevel: logLevel.WARN,
+      // DEBUG so retries and reconnects are visible, but only those lines (and WARN+) are printed: a send that
+      // stalls ~2 s mid-run needs to show whether a broker retried, reconnected, or throttled.
+      logLevel: logLevel.DEBUG,
+      logCreator: () => ({ level, label, log }) => {
+        if (level > logLevel.WARN && !KAFKA_DIAG.test(log.message ?? '')) return;
+        const { timestamp: _t, message, ...extra } = log;
+        console.warn(`[kafkajs] ${label} ${message} ${JSON.stringify(extra).slice(0, 300)}`);
+      },
       sasl: {
         mechanism: 'oauthbearer',
         oauthBearerProvider: async () => {
@@ -121,6 +138,13 @@ async function producer(d: StreamDeps): Promise<Producer> {
       },
     });
     const p = client.producer({ allowAutoTopicCreation: false });
+    // Per-broker timing of slow requests: pendingDuration is time queued in the client, duration the round trip.
+    p.on(p.events.REQUEST, ({ payload: r }) => {
+      if (r.duration + r.pendingDuration > 500) {
+        console.warn(`[kafka] ${r.apiName} to ${r.broker} took ${r.duration} ms (+${r.pendingDuration} ms queued, ${r.size} bytes)`);
+      }
+    });
+    p.on(p.events.REQUEST_TIMEOUT, ({ payload: r }) => console.warn(`[kafka] ${r.apiName} to ${r.broker} timed out`));
     kafka = { producer: p, connected: p.connect() };
     kafka.connected.catch(() => { kafka = null; });
   }
@@ -169,7 +193,10 @@ function matches(feature: FeatureName, event: ClickEvent): boolean {
   return !('mobileOnly' in spec) || event.device !== 'web';
 }
 
-export async function send(events: ClickEvent[], source: string): Promise<Tracked[]> {
+// Untracked load events written since measuring began (counted in events/s, never timed).
+const loadSamples: { at: number; n: number }[] = [];
+
+export async function send(events: ClickEvent[], source: string, load: ClickEvent[] = []): Promise<Tracked[]> {
   const d = deps;
   if (!d) throw new Error('stream module not started');
 
@@ -196,7 +223,12 @@ export async function send(events: ClickEvent[], source: string): Promise<Tracke
     return tracked;
   });
   try {
-    await (d.produce ? d.produce(events) : produceKafka(d, events));
+    const all = load.length ? [...events, ...load] : events;
+    await (d.produce ? d.produce(all) : produceKafka(d, all));
+    if (load.length) {
+      loadSamples.push({ at: Date.now(), n: load.length });
+      if (loadSamples.length > 400) loadSamples.splice(0, loadSamples.length - 400);
+    }
   } catch (error) {
     // Not written to Kafka: stop tracking these events so they are not reported as missing.
     const failed = new Set(trackedEvents);
@@ -293,10 +325,15 @@ export function stats(windowMs = 60_000) {
   const serving = servingSamples.filter((s) => s.at >= now - SERVING_WINDOW_MS).map((s) => s.ms);
   const ranks = rankSamples.filter((s) => s.at >= now - RANK_WINDOW_MS).map((s) => s.ms);
   const observedMs = traffic ? Math.min(windowMs, Math.max(250, now - traffic.started)) : windowMs;
+  const observedS = Math.max(0.25, observedMs / 1000);
+  let loadSent = 0;
+  for (let i = loadSamples.length - 1; i >= 0 && loadSamples[i].at >= since; i -= 1) loadSent += loadSamples[i].n;
   return {
     sent,
     missing,
-    events_per_s: traffic ? backgroundSent / Math.max(0.25, observedMs / 1000) : 0,
+    events_per_s: traffic ? (backgroundSent + loadSent) / observedS : 0,
+    // Events per second timed end to end (all of them up to MEASURED_EPS, a fixed sample above it).
+    measured_per_s: traffic ? backgroundSent / observedS : 0,
     pending: pending.size,
     poll_error: pollError || null,
     served_p50: pct(lag, 50),
@@ -382,18 +419,84 @@ async function warmKafka(d: StreamDeps) {
   });
 }
 
+// A stalled MSK connect would otherwise hold the Start request open with no feedback in the UI.
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not finish in ${ms / 1000} s, try Start again`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+// ── keep-warm ────────────────────────────────────────────────────────────────
+let lastVisit = 0;
+let warmSince = 0; // start of the current unbroken keep-warm stream, 0 while it is not flowing
+let lastWarmSend = 0;
+let lastWarmRead = 0;
+let keepWarmBusy = false;
+let keepWarmTimer: NodeJS.Timeout | null = null;
+
+/** Called on every browser API request; keeps the pipeline warm while someone has the app open. */
+export function touch(): void {
+  lastVisit = Date.now();
+}
+
+async function keepWarm(): Promise<void> {
+  const d = deps;
+  const now = Date.now();
+  if (!d) return;
+  if (traffic) {
+    // Live traffic keeps everything hot by itself.
+    if (!warmSince) warmSince = now;
+    lastWarmSend = now;
+    return;
+  }
+  if (now - lastVisit > KEEP_WARM_IDLE_MS) {
+    warmSince = 0;
+    return;
+  }
+  if (keepWarmBusy) return;
+  keepWarmBusy = true;
+  try {
+    // Endpoint compute is kept warm by the server's 3-minute warm call; this read only keeps the live tracker's
+    // Feature Serving connection open, so the first reads after Start are not slow.
+    if (now - lastWarmRead >= KEEP_WARM_READ_EVERY_MS) {
+      lastWarmRead = now;
+      void d.lookup([{ customer_id: `cust_warmup_${uid()}`, product_category: 'savings' }]).catch(() => undefined);
+    }
+    const event = clickEvent(`cust_warmup_${uid()}`);
+    await (d.produce ? d.produce([event]) : produceKafka(d, [event]));
+    if (!warmSince) warmSince = Date.now();
+    lastWarmSend = Date.now();
+  } catch {
+    warmSince = 0; // a failed send means the stream is not warm; Start falls back to the full warm-up
+  } finally {
+    keepWarmBusy = false;
+  }
+}
+
+// How much of the Start warm-up is still needed: none once keep-warm has flowed for a full warm-up window.
+function warmupLeftMs(): number {
+  const now = Date.now();
+  const flowing = warmSince > 0 && now - lastWarmSend < 2_000;
+  return flowing ? Math.max(0, warmupMs() - (now - warmSince)) : warmupMs();
+}
+
 export async function startTraffic(eps: number, seconds: number): Promise<void> {
   stopTraffic();
-  if (deps && !deps.produce) await warmKafka(deps);
+  const warmLeft = warmupLeftMs();
+  // A flowing keep-warm stream already holds open producer connections, so skip the connection warm-up too.
+  if (deps && !deps.produce && warmLeft > 0) await withTimeout(warmKafka(deps), KAFKA_WARM_TIMEOUT_MS, 'Connecting to Kafka');
   pending.clear();
   recent.length = 0;
   servedLog.length = 0;
   finished.length = 0;
   servingSamples.length = 0;
   rankSamples.length = 0;
+  loadSamples.length = 0;
   count.clear();
   // `started` is when measuring begins; before it the same traffic flows untracked to warm the pipeline.
-  const trackFrom = Date.now() + warmupMs();
+  const trackFrom = Date.now() + warmLeft;
   const session: TrafficSession = { eps, started: trackFrom, until: trackFrom + seconds * 1000, timer: null, error: '' };
   const tick = async () => {
     if (traffic !== session) return;
@@ -402,15 +505,19 @@ export async function startTraffic(eps: number, seconds: number): Promise<void> 
       return;
     }
     const warming = Date.now() < session.started;
-    // Fresh visitor keys, so each event moves its features from 0 to 1 and can be timed on its own.
-    const events = Array.from({ length: Math.max(1, Math.round(session.eps / 4)) }, () => clickEvent(warming ? `cust_warmup_${uid()}` : `cust_live_${uid()}`));
+    const total = Math.max(1, Math.round(session.eps / 4));
     try {
       if (warming) {
         const d = deps!;
+        const events = Array.from({ length: total }, () => clickEvent(`cust_warmup_${uid()}`));
         await (d.produce ? d.produce(events) : produceKafka(d, events));
         return;
       }
-      await send(events, 'traffic');
+      // Fresh visitor keys, so each timed event moves its features from 0 to 1 and can be timed on its own.
+      const measured = Math.min(total, Math.round(MEASURED_EPS / 4));
+      const events = Array.from({ length: measured }, () => clickEvent(`cust_live_${uid()}`));
+      const load = Array.from({ length: total - measured }, () => clickEvent(`cust_load_${Math.floor(Math.random() * LOAD_KEYS)}`));
+      await send(events, 'traffic', load);
       if (traffic === session) session.error = '';
     } catch (error) {
       if (traffic === session) session.error = String(error).slice(0, 300);
@@ -496,6 +603,7 @@ export function startStream(d: StreamDeps) {
       .finally(() => setTimeout(loop, pending.size ? 0 : traffic ? 10 : 500));
   })();
   setInterval(() => { if (traffic) void rankOne(d); }, RANK_EVERY_MS);
+  if (!keepWarmTimer) keepWarmTimer = setInterval(() => void keepWarm(), 250);
   // Warm Feature Serving test at startup; retried after a minute on failure, refreshed every 10 min while idle.
   (function baselineLoop() {
     const run = traffic ? Promise.resolve() : runBaseline(d);

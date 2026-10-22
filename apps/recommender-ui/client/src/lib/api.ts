@@ -98,7 +98,7 @@ export interface Tracked {
   targets: TrackedTarget[];
 }
 export interface LiveStats {
-  sent: number; missing: number; events_per_s: number; pending: number; poll_error: string | null; n: number;
+  sent: number; missing: number; events_per_s: number; measured_per_s?: number; pending: number; poll_error: string | null; n: number;
   served_p50: number | null; served_p95: number | null; served_p99: number | null; resolution_p50?: number | null;
   feature_serving_p50?: number | null; feature_serving_p95?: number | null; feature_serving_p99?: number | null;
   feature_serving_n?: number;
@@ -141,11 +141,12 @@ export const SESSION_ID: string =
     ? crypto.randomUUID()
     : `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
-async function call<T>(path: string, body?: unknown, method?: string): Promise<T> {
+async function call<T>(path: string, body?: unknown, method?: string, timeoutMs?: number): Promise<T> {
   const res = await fetch(path, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
   });
   let data: unknown = null;
   try {
@@ -171,7 +172,8 @@ export const api = {
   traffic: () => call<TrafficState>('/api/traffic'),
   trafficStart: (eps: number, seconds: number) => call<TrafficState>('/api/traffic', { eps, seconds }),
   trafficStop: () => call<TrafficState>('/api/traffic', undefined, 'DELETE'),
-  live: (cursor = 0) => call<Live>(`/api/live?cursor=${cursor}`),
+  // A poll that hangs would stop the Live stream loop, so each one gives up after 5 s and the next one runs.
+  live: (cursor = 0) => call<Live>(`/api/live?cursor=${cursor}`, undefined, undefined, 5_000),
   metrics: () => call<Metrics>('/api/metrics'),
 };
 

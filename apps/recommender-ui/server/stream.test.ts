@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { feedSince, lastRunSnapshot, latestFinished, pct, pointsSince, startStream, startTraffic, stats, stopTraffic, trafficState, type ClickEvent } from './stream';
+import { feedSince, lastRunSnapshot, latestFinished, pct, pointsSince, startStream, startTraffic, stats, stopTraffic, touch, trafficState, type ClickEvent } from './stream';
 
 const SERVABLE_AFTER_MS = 120; // simulated Kafka -> RTM -> Lakebase lag
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -73,5 +73,57 @@ describe('stream tracker', () => {
     expect(last?.feed).toHaveLength(40);
     expect(last?.points.length).toBeGreaterThan(100);
     expect(s.produce_max).toBeNull(); // fake producer: no Kafka send timings
+  }, 10_000);
+
+  it('above 100 events/s, sends the rest as untimed load', async () => {
+    const produced: ClickEvent[] = [];
+    startStream({
+      host: 'https://example.invalid', getToken: async () => 't', connection: 'c', credential: 'c', topic: 't',
+      warmupMs: 0,
+      produce: async (events) => { produced.push(...events); },
+      lookup: async (rows) => ({ outputs: rows.map(() => ({ cust_clicks_10m: 1, cust_mobile_cat_views_10m: 1 })), latencyMs: 5 }),
+      rank: async () => 30,
+      customers: async () => ['cust_1'],
+    });
+
+    await startTraffic(1000, 60);
+    await sleep(1_500);
+    const s = stats();
+    stopTraffic();
+    const live = produced.filter((e) => e.customer_id.startsWith('cust_live_')).length;
+    const load = produced.filter((e) => /^cust_load_\d+$/.test(e.customer_id)).length;
+    expect(load).toBeGreaterThan(live * 8); // 25 timed + 225 load per 250 ms tick
+    expect(s.events_per_s).toBeGreaterThan(600);
+    expect(s.measured_per_s).toBeLessThan(130);
+    expect(s.measured_per_s).toBeGreaterThan(50);
+  }, 10_000);
+
+  it('keeps the pipeline warm while the app is open, so Start measures at once', async () => {
+    const produced: ClickEvent[] = [];
+    const deps = {
+      host: 'https://example.invalid', getToken: async () => 't', connection: 'c', credential: 'c', topic: 't',
+      warmupMs: 600,
+      produce: async (events: ClickEvent[]) => { produced.push(...events); },
+      lookup: async (rows: Record<string, unknown>[]) => ({ outputs: rows.map(() => ({ cust_clicks_10m: 1, cust_mobile_cat_views_10m: 1 })), latencyMs: 5 }),
+      rank: async () => 30,
+      customers: async () => ['cust_1'],
+    };
+    startStream(deps);
+
+    // Nobody has the app open: no keep-warm traffic, and Start needs the full warm-up.
+    await sleep(600);
+    expect(produced.filter((e) => e.customer_id.startsWith('cust_warmup_'))).toHaveLength(0);
+    await startTraffic(25, 30);
+    expect(trafficState().warming_up).toBe(true);
+    stopTraffic();
+
+    // A browser request starts the trickle; once it has flowed for a warm-up window, Start skips the warm-up.
+    produced.length = 0;
+    touch();
+    await sleep(1_000);
+    expect(produced.filter((e) => e.customer_id.startsWith('cust_warmup_')).length).toBeGreaterThanOrEqual(2);
+    await startTraffic(25, 30);
+    expect(trafficState().warming_up).toBe(false);
+    stopTraffic();
   }, 10_000);
 });
