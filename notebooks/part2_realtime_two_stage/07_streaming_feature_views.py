@@ -36,6 +36,7 @@ dbutils.widgets.text("schema", "")  # blank -> auto-derive nbo_<user>
 dbutils.widgets.text("kafka_connection", "msk_kafka")
 dbutils.widgets.text("topic", "nbo-session-events")
 dbutils.widgets.text("online_store_name", "nbo")
+dbutils.widgets.text("app_name", "")  # app whose Warm up button starts the live pipelines
 catalog = dbutils.widgets.get("catalog").strip()
 schema = dbutils.widgets.get("schema").strip()
 if not schema:
@@ -267,6 +268,33 @@ while True:
     if time.time() - start > DEADLINE_S:
         raise TimeoutError(f"Ingestion pipeline {pid} did not reach RUNNING within {DEADLINE_S}s (last state: {state}).")
     time.sleep(POLL_S)
+
+# COMMAND ----------
+# MAGIC %md ## 5 · Let the app start and stop the live pipelines
+# MAGIC The app's **Warm up** and **Turn off pipelines** buttons start and stop the ingestion pipeline and the
+# MAGIC Real-Time Mode pipelines as the app's service principal, which needs `CAN_RUN` on each. Re-run this
+# MAGIC cell after re-materializing a feature: the new materialization gets a new pipeline.
+# COMMAND ----------
+from databricks.sdk.service.pipelines import PipelineAccessControlRequest, PipelinePermissionLevel
+
+app_name = dbutils.widgets.get("app_name").strip()
+app_sp = None
+if app_name:
+    try:
+        app_sp = w.apps.get(name=app_name).service_principal_client_id
+    except Exception as e:
+        print(f"App {app_name} not found ({type(e).__name__}). Deploy the bundle, then re-run this cell.")
+if app_sp:
+    live_pipelines = {pid}
+    for name in ["cust_clicks_10m", "cust_cat_views_10m", "cust_mobile_cat_views_10m", "cust_cat_views_30d"]:
+        r = w.api_client.do("GET", "/api/2.0/feature-engineering/materialized-features",
+                            query={"feature_name": f"{catalog}.{schema}.{name}"})
+        live_pipelines |= {m["pipeline_id"] for m in r.get("materialized_features", [])
+                           if m.get("streaming_mode") and m.get("pipeline_id")}
+    for p in sorted(live_pipelines):
+        w.pipelines.update_permissions(pipeline_id=p, access_control_list=[PipelineAccessControlRequest(
+            service_principal_name=app_sp, permission_level=PipelinePermissionLevel.CAN_RUN)])
+    print(f"Granted CAN_RUN on {len(live_pipelines)} live pipelines to the {app_name} service principal.")
 
 # COMMAND ----------
 # MAGIC %md

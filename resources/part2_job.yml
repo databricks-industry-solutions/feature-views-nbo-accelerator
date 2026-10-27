@@ -35,6 +35,7 @@ resources:
               kafka_connection: ${var.kafka_connection}
               topic: ${var.kafka_topic}
               online_store_name: ${var.online_store_name}
+              app_name: ${var.app_name}
 
         # Replay the label-linked session history (original event_time) so training sees in-session
         # signal at label time. Without it cust_cat_views_10m is ~0 for every label (see nb08 §3r).
