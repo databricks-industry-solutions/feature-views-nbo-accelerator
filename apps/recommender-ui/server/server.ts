@@ -1,6 +1,7 @@
 import { createApp, analytics, server } from '@databricks/appkit';
 import { metrics } from './realtime.js';
-import { cursorNow, lastRunSnapshot, latestFinished, pointsSince, startStream, startTraffic, stats, stopTraffic, touch, trafficState } from './stream.js';
+import { cursorNow, lastRunSnapshot, lastVisitAt, latestFinished, pointsSince, probeFreshness, startStream, startTraffic, stats, stopTraffic, touch, trafficState, VISIT_WINDOW_MS } from './stream.js';
+import { pipelineStatus, startPipelines, turnOff, warmUp } from './pipelines.js';
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
 // ---------------------------------------------------------------------------
@@ -43,7 +44,12 @@ const KAFKA_CREDENTIAL = process.env.KAFKA_CREDENTIAL ?? 'msk_kafka';
 const KAFKA_TOPIC = process.env.KAFKA_TOPIC ?? 'nbo-session-events';
 // Workspace folder holding this bundle's files, for the "Open in workspace" links on How it works.
 const FILES_PATH = (process.env.FILES_PATH ?? '').replace(/\/+$/, '');
+// Live stream page: the Feature Engineering Stream and the streaming features whose pipelines Warm up starts.
+const LIVE_STREAM = process.env.LIVE_STREAM ?? 'session_events_stream';
+const LIVE_FEATURES = (process.env.LIVE_FEATURES ?? 'cust_clicks_10m,cust_cat_views_10m,cust_mobile_cat_views_10m,cust_cat_views_30d')
+  .split(',').map((f) => f.trim()).filter(Boolean);
 const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
+const FEATURE_READ_CHUNK = 25; // rows per Feature Serving request on the Live stream page
 const FQ = `\`${CATALOG}\`.${SCHEMA}`;
 
 const SYSTEM = `You are the Next-Best-Offer assistant for a retail bank, embedded in a
@@ -450,9 +456,10 @@ async function callModel(messages: unknown[], system: string): Promise<Response>
   });
 }
 
-// Keep both endpoints warm while the app runs, as the card fraud console does: one call to each at boot and
-// every 3 minutes, and a fresh one before a visitor request if the last is older than that. The endpoints keep
-// scale-to-zero on, so they only scale down once the app is stopped (demo paused).
+// Keep both endpoints warm while people use the app, as the card fraud console does: one call to each at boot, on
+// the first visit after a quiet spell, and every 3 minutes while someone has visited in the last 30 minutes. A
+// visitor request also gets a fresh one if the last is older than 3 minutes. The endpoints keep scale-to-zero on,
+// so with nobody visiting they scale down on their own.
 const KEEP_WARM_MS = 3 * 60_000;
 const servingWarm: { status: 'WARMING' | 'READY' | 'ERROR'; at: number | null; error: string | null } = {
   status: 'WARMING', at: null, error: null,
@@ -487,7 +494,10 @@ createApp({
     appkit.server.extend((app) => {
       // Any browser request marks the app as in use, which keeps the live pipeline warm (stream.ts keepWarm).
       app.use('/api', (_req, _res, next) => {
+        const quiet = Date.now() - lastVisitAt() > VISIT_WINDOW_MS;
         touch();
+        // Wake the endpoints on the page load itself, so the visitor's first recommendation does not wait for it.
+        if (quiet) void warmServing().catch(() => undefined);
         next();
       });
       // Lightweight config for the UI header (catalog/schema the app is pointed at).
@@ -582,13 +592,38 @@ createApp({
           feed: latestFinished(40), points: pointsSince(cursor),
           // While traffic is off or the pipeline is warming, the last run's frozen numbers (server memory).
           last_run: trafficState().running && !trafficState().warming_up ? null : lastRunSnapshot(),
+          pipelines: pipelineStatus(),
+          serving: { status: servingWarm.status, at: servingWarm.at, error: servingWarm.error },
         });
+      });
+      // Warm up / turn off the live pipelines (ingestion + Real-Time Mode), started by the app service principal.
+      // Warm up also wakes both serving endpoints, which may have scaled to zero while nobody visited.
+      app.post('/api/pipelines', async (_req, res) => {
+        void warmServing().catch(() => undefined);
+        try {
+          res.json(await warmUp());
+        } catch (e) {
+          res.status(502).json({ error: String(e).slice(0, 300) });
+        }
+      });
+      app.delete('/api/pipelines', async (_req, res) => {
+        stopTraffic(); // traffic has nothing to measure once the pipelines stop
+        try {
+          res.json(await turnOff());
+        } catch (e) {
+          res.status(502).json({ error: String(e).slice(0, 300) });
+        }
       });
       app.get('/api/traffic', (_req, res) => {
         res.json(trafficState());
       });
       app.post('/api/traffic', async (req, res) => {
         const b = (req.body ?? {}) as { eps?: number; seconds?: number };
+        const phase = pipelineStatus().phase;
+        if (phase === 'off' || phase === 'stopping') {
+          res.status(409).json({ error: 'The live pipelines are off. Press Warm up first. Warming up takes about 2 minutes.' });
+          return;
+        }
         try {
           await startTraffic(Math.min(1000, Math.max(1, Number(b.eps ?? 25))), Math.min(1800, Math.max(10, Number(b.seconds ?? 300))));
           res.json(trafficState());
@@ -694,7 +729,26 @@ createApp({
       }
       await warmServing().catch((e) => console.warn('[warmup] keep-warm call failed:', String(e).slice(0, 200)));
     })();
-    setInterval(() => void warmServing().catch((e) => console.warn('[warmup] keep-warm call failed:', String(e).slice(0, 200))), KEEP_WARM_MS);
+    setInterval(() => {
+      if (Date.now() - lastVisitAt() > VISIT_WINDOW_MS) return;
+      void warmServing().catch((e) => console.warn('[warmup] keep-warm call failed:', String(e).slice(0, 200)));
+    }, KEEP_WARM_MS);
+
+    startPipelines({
+      api: async <T,>(method: string, path: string, body?: unknown) => {
+        const r = await fetch(`${HOST}${path}`, {
+          method,
+          headers: { Authorization: `Bearer ${await getToken()}`, 'Content-Type': 'application/json' },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error(`${method} ${path.split('?')[0]} ${r.status}: ${(await r.text()).slice(0, 200)}`);
+        const text = await r.text();
+        return (text ? JSON.parse(text) : {}) as T;
+      },
+      stream:`${CATALOG}.${SCHEMA}.${LIVE_STREAM}`,
+      features: LIVE_FEATURES.map((f) => `${CATALOG}.${SCHEMA}.${f}`),
+      probe: () => probeFreshness(),
+    });
 
     // Live traffic: the app produces to Kafka and tracks each event until Feature Serving returns it.
     // Traffic only flows after Start live traffic.
@@ -710,12 +764,19 @@ createApp({
         const resolveWaitMs = Date.now() - w0;
         nextFeatureEndpoint = resolveFeatureEndpoint();
         nextFeatureEndpoint.catch(() => undefined);
-        const { json, latencyMs, readAt } = await queryEndpoint(FEATURE_ENDPOINT, rows, ep);
-        if (resolveWaitMs > 300 || latencyMs > 300) console.warn(`[feature-read] waited ${resolveWaitMs} ms for endpoint lookup, data-plane read ${latencyMs} ms`);
-        const outputs = (Array.isArray(json.outputs) ? json.outputs : Array.isArray(json.predictions) ? json.predictions : []) as Record<string, unknown>[];
-        return { outputs, latencyMs, readAt };
+        // Same as the card fraud console: parallel chunks of at most 25 rows. One large request is slow (each
+        // row fans out to every online table in the FeatureSpec), so a 100-row read would inflate the latency
+        // the Live stream tile reports and hold back fresh events.
+        const chunks = Array.from({ length: Math.ceil(rows.length / FEATURE_READ_CHUNK) }, (_, i) =>
+          rows.slice(i * FEATURE_READ_CHUNK, (i + 1) * FEATURE_READ_CHUNK));
+        const reads = await Promise.all(chunks.map((c) => queryEndpoint(FEATURE_ENDPOINT, c, ep)));
+        const slowest = Math.max(...reads.map((r) => r.latencyMs));
+        if (resolveWaitMs > 300 || slowest > 300) console.warn(`[feature-read] waited ${resolveWaitMs} ms for endpoint lookup, slowest data-plane read ${slowest} ms (${chunks.length} chunks)`);
+        const outputs = reads.flatMap(({ json }) =>
+          (Array.isArray(json.outputs) ? json.outputs : Array.isArray(json.predictions) ? json.predictions : []) as Record<string, unknown>[]);
+        // readAt: the latest chunk midpoint, so a served time is never placed earlier than its read.
+        return { outputs, latencyMs: slowest, callsMs: reads.map((r) => r.latencyMs), readAt: Math.max(...reads.map((r) => r.readAt)) };
       },
-      rank: async (customerId: string) => (await rankAll(customerId, {}, await getToken())).latencyMs,
       customers: getSampleCustomers,
     });
   },

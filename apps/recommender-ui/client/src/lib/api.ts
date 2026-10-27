@@ -106,7 +106,6 @@ export interface LiveStats {
   feature_serving_baseline_p50?: number | null; feature_serving_baseline_p95?: number | null;
   feature_serving_baseline_p99?: number | null; feature_serving_baseline_n?: number;
   feature_serving_baseline_at?: number | null; feature_serving_baseline_error?: string | null;
-  serving_p50?: number | null; serving_p95?: number | null; serving_n?: number; serving_error?: string | null;
   produce_p50?: number | null; produce_p95?: number | null; produce_max?: number | null;
 }
 export interface LastRun {
@@ -118,6 +117,18 @@ export interface Live {
   feed: Tracked[]; // newest 40 finished events, newest first
   points: { id: string; t: number; v: number }[]; // every target served since the request's cursor
   last_run: LastRun | null; // frozen numbers of the last finished run, while traffic is off
+  pipelines: PipelineStatus;
+  serving: { status: 'WARMING' | 'READY' | 'ERROR'; at: number | null; error: string | null };
+}
+// The ingestion + Real-Time Mode pipelines behind the Live stream page. They stay off until Warm up.
+export type PipelinePhase = 'checking' | 'off' | 'starting' | 'ready' | 'stopping' | 'unknown';
+export interface PipelineStatus {
+  phase: PipelinePhase;
+  pipes: { id: string; label: string; role: 'ingestion' | 'rtm'; state: string; update: string | null }[];
+  failed: string[];
+  probe_ms: number | null;
+  queued: boolean;
+  error: string | null;
 }
 
 export interface FeatureRow {
@@ -172,6 +183,8 @@ export const api = {
   traffic: () => call<TrafficState>('/api/traffic'),
   trafficStart: (eps: number, seconds: number) => call<TrafficState>('/api/traffic', { eps, seconds }),
   trafficStop: () => call<TrafficState>('/api/traffic', undefined, 'DELETE'),
+  warmUp: () => call<PipelineStatus>('/api/pipelines', {}),
+  turnOff: () => call<PipelineStatus>('/api/pipelines', undefined, 'DELETE'),
   // A poll that hangs would stop the Live stream loop, so each one gives up after 5 s and the next one runs.
   live: (cursor = 0) => call<Live>(`/api/live?cursor=${cursor}`, undefined, undefined, 5_000),
   metrics: () => call<Metrics>('/api/metrics'),

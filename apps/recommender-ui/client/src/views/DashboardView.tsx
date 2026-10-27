@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Play, Square, Radio, Zap, Gauge } from 'lucide-react';
+import { Play, Square, Radio, Zap, Gauge, Flame, LoaderCircle, CircleCheck, Power } from 'lucide-react';
 import { api, type Live } from '@/lib/api';
 
 // Same view as the card fraud console's Live view: the app writes click events to Kafka and times each
@@ -54,6 +54,8 @@ export function DashboardView() {
   const [actionError, setActionError] = useState(''); // Start/Stop errors, kept until the next click
   const [eps, setEps] = useState(100);
   const [busy, setBusy] = useState(false);
+  const [pipeBusy, setPipeBusy] = useState(false);
+  const [warmClickedAt, setWarmClickedAt] = useState(0);
   const points = useRef(new Map<string, { t: number; v: number }>());
   const cursor = useRef(0);
   // Bumped on every Start/Stop. A poll that was already in flight then carries the old traffic state, so drop it.
@@ -102,6 +104,20 @@ export function DashboardView() {
     setBusy(false);
   };
 
+  // Step 1, Warm up: start the ingestion + Real-Time Mode pipelines. They stay off between demos to save cost.
+  const pipeAction = async (on: boolean) => {
+    setPipeBusy(true);
+    setActionError('');
+    try {
+      if (on) setWarmClickedAt(Date.now());
+      const pipelines = on ? await api.warmUp() : await api.turnOff();
+      setLive((l) => (l ? { ...l, pipelines } : l));
+    } catch (e) {
+      setActionError(String(e));
+    }
+    setPipeBusy(false);
+  };
+
   // While traffic is off, show the last run's frozen numbers (kept on the server) instead of empty tiles.
   // During warm-up show nothing old, so a fresh start never looks like the previous run.
   const warming = !!live?.traffic.running && !!live?.traffic.warming_up;
@@ -120,12 +136,39 @@ export function DashboardView() {
   const featureLatencySub = warming && !last
     ? warmNote
     : liveFeatureP95 !== null
-      ? `${last ? 'last run, final' : 'live last'} ${s?.feature_serving_window_s ?? 10}s · p50 ${ms(s?.feature_serving_p50)} · ${s?.feature_serving_n ?? 0} calls`
+      ? `${last ? 'last run, final' : 'live last'} ${s?.feature_serving_window_s ?? 10}s · p50 ${ms(s?.feature_serving_p50)} · ${Math.round((s?.feature_serving_n ?? 0) / (s?.feature_serving_window_s ?? 10))} req/s, up to 25 keys each`
       : `round trip · p50 — · ${live?.traffic.running ? 'waiting for the first reads' : 'traffic stopped'}`;
+
+  const pipes = live?.pipelines;
+  // Warm up covers the serving endpoints too; a failed endpoint warm call does not block Start.
+  const servingWarming = live?.serving.status === 'WARMING';
+  const pipePhase = pipes?.phase ?? 'checking';
+  const phase = pipePhase === 'ready' && servingWarming ? 'starting' : pipePhase;
+  const rtm = pipes?.pipes.filter((p) => p.role === 'rtm') ?? [];
+  const rtmUp = rtm.filter((p) => p.state === 'RUNNING' && p.update === 'RUNNING').length;
+  // 'unknown' means the app could not read the pipelines; Start stays usable then, the server reports any real error.
+  const ready = phase === 'ready' || phase === 'unknown';
+  const trafficOn = !!live?.traffic.running;
+  const warmSecs = warmClickedAt && Date.now() - warmClickedAt < 600_000 ? Math.round((Date.now() - warmClickedAt) / 1000) : null;
+  const pipeNote = {
+    checking: 'Checking the live pipelines…',
+    off: 'Step 1: warm up the live pipelines. Warming up takes about 2 minutes. They stay off between demos to save cost.',
+    starting: pipes?.queued
+      ? 'Waiting for the pipelines to finish shutting down, then warming up. This adds a few minutes.'
+      : rtm.length && rtmUp === rtm.length && !servingWarming
+      ? `Pipelines running, waiting until test events come through in under 1 s${pipes?.probe_ms != null ? ` · last one ${(pipes.probe_ms / 1000).toFixed(1)} s` : ''}${warmSecs !== null ? ` · ${warmSecs}s` : ''}`
+      : `Warming up takes about 2 minutes · starting Kafka ingestion, ${rtm.length || 4} Real-Time Mode pipelines and the serving endpoints · ${rtmUp}/${rtm.length || 4} pipelines running · endpoints ${servingWarming ? 'warming' : 'warm'}${warmSecs !== null ? ` · ${warmSecs}s` : ''}`,
+    stopping: 'Shutting down takes about 5 minutes. Press Warm up to start the pipelines again as soon as they stop.',
+    ready: trafficOn
+      ? 'Live pipelines running'
+      : 'Step 2: start live traffic. The pipelines stay on until you press Turn off pipelines.',
+    unknown: 'Could not read the live pipelines',
+  }[phase];
+  const pipeError = pipes?.failed.length ? `Failed to start: ${pipes.failed.join(', ')}. Press Warm up to retry.` : pipes?.error;
 
   return (
     <div className="nbo-live mx-auto w-full max-w-6xl px-6 py-7">
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
+      <div className="mb-5 flex flex-col items-start gap-4">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--bank-green)]">Real-time path</div>
           <h1 className="text-[24px] font-semibold tracking-tight">Every click event, from Kafka to the next best offer</h1>
@@ -139,7 +182,25 @@ export function DashboardView() {
             its own. Above 100 events/s, a fixed 100/s sample is timed and the rest is sent as load.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col items-start gap-1.5">
+        <div className="flex items-center gap-2 whitespace-nowrap">
+          {phase === 'ready' ? (
+            <span className="flex items-center gap-1.5 rounded-xl border border-[var(--bank-line)] bg-white px-3 py-2 text-[13px] font-semibold text-[var(--bank-green)]">
+              <CircleCheck size={14} /> Pipelines ready
+            </span>
+          ) : (
+            <button
+              onClick={() => pipeAction(true)}
+              disabled={pipeBusy || !live || phase === 'starting' || phase === 'checking'}
+              title="Warming up takes about 2 minutes"
+              className="flex items-center gap-2 rounded-xl px-4 py-2 text-[13px] font-semibold shadow-sm disabled:opacity-60"
+              style={{ background: 'var(--bank-glow)', color: 'var(--bank-navy)' }}
+            >
+              {phase === 'starting' || pipeBusy
+                ? <><LoaderCircle size={14} className="animate-spin" /> Warming up…</>
+                : <><Flame size={14} /> Warm up pipelines</>}
+            </button>
+          )}
           <select
             value={eps}
             onChange={(e) => setEps(Number(e.target.value))}
@@ -150,20 +211,36 @@ export function DashboardView() {
           </select>
           <button
             onClick={toggle}
-            disabled={busy || !live}
+            disabled={busy || !live || (!trafficOn && !ready)}
+            title={!trafficOn && !ready ? 'Warm up the pipelines first' : undefined}
             className="flex items-center gap-2 rounded-xl px-4 py-2 text-[13px] font-semibold shadow-sm disabled:opacity-50"
-            style={live?.traffic.running ? { background: 'var(--bank-navy)', color: 'white' } : { background: 'var(--bank-glow)', color: 'var(--bank-navy)' }}
+            style={trafficOn ? { background: 'var(--bank-navy)', color: 'white' } : ready
+              ? { background: 'var(--bank-glow)', color: 'var(--bank-navy)' }
+              : { background: 'white', color: 'var(--bank-navy)', border: '1px solid var(--bank-line)' }}
           >
             {busy
               ? live?.traffic.running ? <><Square size={14} /> Stopping…</> : <><Play size={14} /> Connecting to Kafka…</>
               : live?.traffic.running ? <><Square size={14} /> Stop traffic</> : <><Play size={14} /> Start live traffic</>}
           </button>
+          {/* The only way the app stops the pipelines; it also stops any live traffic. */}
+          <button
+            onClick={() => pipeAction(false)}
+            disabled={pipeBusy || !live || !(phase === 'ready' || phase === 'starting')}
+            title="Shutting down takes about 5 minutes"
+            className="flex items-center gap-2 rounded-xl border border-[var(--bank-line)] bg-white px-4 py-2 text-[13px] font-semibold text-[var(--bank-navy)] shadow-sm disabled:opacity-50"
+          >
+            {phase === 'stopping'
+              ? <><LoaderCircle size={14} className="animate-spin" /> Turning off…</>
+              : <><Power size={14} /> Turn off pipelines</>}
+          </button>
+        </div>
+        <div className="text-left text-[11.5px] leading-[1.45] text-neutral-500">{pipeNote}</div>
         </div>
       </div>
 
-      {(actionError || error || live?.traffic.error || s?.poll_error) && (
+      {(actionError || error || live?.traffic.error || s?.poll_error || pipeError) && (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-[12.5px] text-red-700">
-          {actionError || error || live?.traffic.error || s?.poll_error}
+          {actionError || error || live?.traffic.error || s?.poll_error || pipeError}
         </div>
       )}
 
@@ -208,7 +285,7 @@ export function DashboardView() {
               </tr>
             )))}
             {!feed.length && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-neutral-400">{warming ? `Warming the pipeline. Measured events start in ${live?.traffic.warm_left_s ?? 0}s.` : 'Start live traffic to stream click events.'}</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-neutral-400">{warming ? `Warming the pipeline. Measured events start in ${live?.traffic.warm_left_s ?? 0}s.` : ready ? 'Start live traffic to stream click events.' : 'Warm up the pipelines, then start live traffic to stream click events.'}</td></tr>
             )}
           </tbody>
         </table>

@@ -27,7 +27,6 @@ describe('stream tracker', () => {
         })),
         latencyMs: 5,
       }),
-      rank: async () => 30,
       customers: async () => ['cust_1', 'cust_2'],
     });
 
@@ -45,7 +44,6 @@ describe('stream tracker', () => {
     expect(s.feature_serving_p95).toBe(5);
     expect(s.feature_serving_baseline_p95).toBe(5);
     expect(s.feature_serving_baseline_n).toBe(40);
-    expect(s.serving_p95).toBe(30);
 
     const feed = feedSince(0);
     expect(feed[0].event.customer_id).toMatch(/^cust_live_[0-9a-f]{12}$/);
@@ -82,7 +80,6 @@ describe('stream tracker', () => {
       warmupMs: 0,
       produce: async (events) => { produced.push(...events); },
       lookup: async (rows) => ({ outputs: rows.map(() => ({ cust_clicks_10m: 1, cust_mobile_cat_views_10m: 1 })), latencyMs: 5 }),
-      rank: async () => 30,
       customers: async () => ['cust_1'],
     });
 
@@ -105,7 +102,6 @@ describe('stream tracker', () => {
       warmupMs: 600,
       produce: async (events: ClickEvent[]) => { produced.push(...events); },
       lookup: async (rows: Record<string, unknown>[]) => ({ outputs: rows.map(() => ({ cust_clicks_10m: 1, cust_mobile_cat_views_10m: 1 })), latencyMs: 5 }),
-      rank: async () => 30,
       customers: async () => ['cust_1'],
     };
     startStream(deps);

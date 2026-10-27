@@ -13,8 +13,8 @@ export interface StreamDeps {
   connection: string; // UC Kafka connection holding bootstrap_servers
   credential: string; // UC service credential for MSK IAM
   topic: string;
-  lookup: (rows: Record<string, unknown>[]) => Promise<{ outputs: Record<string, unknown>[]; latencyMs: number; readAt?: number }>;
-  rank: (customerId: string) => Promise<number>; // ranker data-plane latency in ms
+  // callsMs: one entry per Feature Serving request when the rows were split into chunks.
+  lookup: (rows: Record<string, unknown>[]) => Promise<{ outputs: Record<string, unknown>[]; latencyMs: number; callsMs?: number[]; readAt?: number }>;
   customers: () => Promise<string[]>;
   produce?: (events: ClickEvent[]) => Promise<void>; // tests inject a fake Kafka
   warmupMs?: number;
@@ -56,13 +56,11 @@ export interface Tracked {
 }
 
 const SERVING_WINDOW_MS = 10_000;
-const RANK_WINDOW_MS = 30_000;
 const RECENT_RETENTION_MS = 70_000;
 const MISSING_AFTER_MS = 30_000;
 // After Start, this long of untracked traffic warms the RTM pipeline before measuring begins. A cold run
 // otherwise shows a 1-3 s Kafka -> RTM catch-up in its first seconds (seen at 00:44:08 UTC, 2026-10-17).
 const WARMUP_MS = 10_000;
-const RANK_EVERY_MS = 700; // same cadence as the fraud console's scoring sampler
 // Above this rate, each extra event is plain load: sent to Kafka on a repeat-visitor key, not timed.
 // Timing every event at 1,000/s would mean ~100k chart points and a Feature Serving read for each.
 const MEASURED_EPS = 100;
@@ -76,6 +74,8 @@ const KEEP_WARM_READ_EVERY_MS = 2_000;
 const BASELINE_WARMUPS = 12;
 const BASELINE_CALLS = 40;
 const BASELINE_EVERY_MS = 10 * 60_000;
+// Endpoint warm calls stop this long after the last browser request, so idle endpoints scale to zero.
+export const VISIT_WINDOW_MS = 30 * 60_000;
 const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
 const EVENT_TYPES = ['page_view', 'product_view', 'calculator_use', 'add_to_cart', 'search'];
 const DEVICES = ['ios', 'android', 'web'];
@@ -182,9 +182,7 @@ const finished: { at: number; tracked: Tracked }[] = [];
 let lastAt = 0;
 const stamp = () => (lastAt = Math.max(Date.now(), lastAt + 0.001)); // strictly increasing cursor values
 const servingSamples: { at: number; ms: number }[] = [];
-const rankSamples: { at: number; ms: number }[] = [];
 let pollError = '';
-let rankError = '';
 let baseline: { p50: number | null; p95: number | null; p99: number | null; n: number; at: number | null; error: string | null } =
   { p50: null, p95: null, p99: null, n: 0, at: null, error: null };
 
@@ -249,9 +247,10 @@ async function poll(): Promise<void> {
   // One row per (customer, category): that row returns both the customer- and the category-keyed feature.
   const rows = [...new Map([...pending.values()].reverse().map((t) => [`${t.event.customer_id}|${t.event.product_category}`, t.event])).values()].slice(0, 100);
   const started = Date.now();
-  const { outputs, latencyMs, readAt: dataPlaneReadAt } = await d.lookup(rows.map((e) => ({ customer_id: e.customer_id, product_category: e.product_category })));
+  const { outputs, latencyMs, callsMs, readAt: dataPlaneReadAt } = await d.lookup(rows.map((e) => ({ customer_id: e.customer_id, product_category: e.product_category })));
   if (traffic && started >= traffic.started) {
-    servingSamples.push({ at: Date.now(), ms: latencyMs });
+    const at = Date.now();
+    for (const ms of callsMs ?? [latencyMs]) servingSamples.push({ at, ms });
     if (servingSamples.length > 2_000) servingSamples.splice(0, servingSamples.length - 2_000);
   }
 
@@ -323,7 +322,6 @@ export function stats(windowMs = 60_000) {
     }
   }
   const serving = servingSamples.filter((s) => s.at >= now - SERVING_WINDOW_MS).map((s) => s.ms);
-  const ranks = rankSamples.filter((s) => s.at >= now - RANK_WINDOW_MS).map((s) => s.ms);
   const observedMs = traffic ? Math.min(windowMs, Math.max(250, now - traffic.started)) : windowMs;
   const observedS = Math.max(0.25, observedMs / 1000);
   let loadSent = 0;
@@ -352,11 +350,6 @@ export function stats(windowMs = 60_000) {
     feature_serving_baseline_n: baseline.n,
     feature_serving_baseline_at: baseline.at,
     feature_serving_baseline_error: baseline.error,
-    // Ranker (online feature lookup + model) latency, sampled every 700 ms while traffic runs; used by How it works.
-    serving_p50: pct(ranks, 50),
-    serving_p95: pct(ranks, 95),
-    serving_n: ranks.length,
-    serving_error: rankError || null,
     // Kafka send time per 250 ms batch, last 60 s.
     produce_p50: pct(produceSamples.filter((x) => x.at >= since).map((x) => x.ms), 50),
     produce_p95: pct(produceSamples.filter((x) => x.at >= since).map((x) => x.ms), 95),
@@ -440,6 +433,7 @@ let keepWarmTimer: NodeJS.Timeout | null = null;
 export function touch(): void {
   lastVisit = Date.now();
 }
+export const lastVisitAt = () => lastVisit;
 
 async function keepWarm(): Promise<void> {
   const d = deps;
@@ -492,7 +486,6 @@ export async function startTraffic(eps: number, seconds: number): Promise<void> 
   servedLog.length = 0;
   finished.length = 0;
   servingSamples.length = 0;
-  rankSamples.length = 0;
   loadSamples.length = 0;
   count.clear();
   // `started` is when measuring begins; before it the same traffic flows untracked to warm the pipeline.
@@ -562,7 +555,7 @@ export function trafficState() {
     : { running: false };
 }
 
-// ── warm baseline + ranker load ──────────────────────────────────────────────
+// ── warm baseline ──────────────────────────────────────────────────────
 async function runBaseline(d: StreamDeps) {
   try {
     const customers = await d.customers();
@@ -577,23 +570,22 @@ async function runBaseline(d: StreamDeps) {
   }
 }
 
-let rankCustomers: string[] = [];
-let rankIdx = 0;
-let rankInFlight = 0;
-async function rankOne(d: StreamDeps) {
-  if (rankInFlight >= 3) return;
-  rankInFlight += 1;
-  try {
-    if (!rankCustomers.length) rankCustomers = await d.customers();
-    if (!rankCustomers.length) throw new Error('no customers available to rank');
-    rankSamples.push({ at: Date.now(), ms: await d.rank(rankCustomers[rankIdx++ % rankCustomers.length]) });
-    if (rankSamples.length > 2_000) rankSamples.splice(0, rankSamples.length - 2_000);
-    rankError = '';
-  } catch (e) {
-    rankError = String(e).slice(0, 300);
-  } finally {
-    rankInFlight -= 1;
+// Freshness probe for Warm up: one click on a fresh key, read back through Feature Serving until both tracked
+// streaming features show it. Right after the pipelines report RUNNING, events still took ~21 s to become
+// servable (06:10 UTC, 2026-10-22), so Warm up waits until this comes back fast before it says ready.
+export async function probeFreshness(timeoutMs = 30_000): Promise<number> {
+  const d = deps;
+  if (!d) throw new Error('live stream not started');
+  const event = { ...clickEvent(`cust_probe_${uid()}`), device: 'ios' }; // non-web, so both features count it
+  const sentAt = Date.now();
+  await (d.produce ? d.produce([event]) : produceKafka(d, [event]));
+  while (Date.now() - sentAt < timeoutMs) {
+    const { outputs } = await d.lookup([{ customer_id: event.customer_id, product_category: event.product_category }]);
+    const o = outputs[0] ?? {};
+    if (Number(o.cust_clicks_10m) >= 1 && Number(o.cust_mobile_cat_views_10m) >= 1) return Date.now() - sentAt;
+    await new Promise((r) => setTimeout(r, 100));
   }
+  throw new Error(`test event not servable after ${timeoutMs / 1000} s`);
 }
 
 export function startStream(d: StreamDeps) {
@@ -602,11 +594,14 @@ export function startStream(d: StreamDeps) {
     poll().then(() => { pollError = ''; }, (error) => { pollError = String(error).slice(0, 300); })
       .finally(() => setTimeout(loop, pending.size ? 0 : traffic ? 10 : 500));
   })();
-  setInterval(() => { if (traffic) void rankOne(d); }, RANK_EVERY_MS);
   if (!keepWarmTimer) keepWarmTimer = setInterval(() => void keepWarm(), 250);
-  // Warm Feature Serving test at startup; retried after a minute on failure, refreshed every 10 min while idle.
+  // Warm Feature Serving test at startup; retried after a minute on failure, refreshed every 10 min while someone
+  // has visited in the last 30 min. With no visitors it stops, so the endpoint can scale to zero.
+  let first = true;
   (function baselineLoop() {
-    const run = traffic ? Promise.resolve() : runBaseline(d);
+    const visited = first || Date.now() - lastVisit < VISIT_WINDOW_MS;
+    first = false;
+    const run = traffic || !visited ? Promise.resolve() : runBaseline(d);
     void run.finally(() => setTimeout(baselineLoop, baseline.error ? 60_000 : BASELINE_EVERY_MS));
   })();
   // Open the Kafka connection early so the first Start does not pay the TLS + IAM handshake.
