@@ -6,7 +6,7 @@
 ![Feature Views](https://img.shields.io/badge/Feature%20Views-Batch%20%2B%20Streaming-FF3621)
 
 Build a personalized banking experience that updates recommendations as customer intent changes.
-This accelerator uses **Mosaic AI Feature Engineering**, **Lakebase**, **Model Serving**, and a
+This accelerator uses **Databricks Feature Engineering**, **Lakebase**, **Model Serving**, and a
 **Databricks App** to train and serve a next-best-offer ranker from the same governed feature
 definitions.
 
@@ -57,12 +57,12 @@ serving latency, event throughput, and feature freshness.
 
 The accelerator is organized into two runnable Lakeflow Jobs:
 
-### Part 1 — Feature Views fundamentals
+### Part 1: Feature Views fundamentals
 
 Creates synthetic banking data, defines batch Feature Views, materializes them offline and online,
 trains the ranker, and deploys the first online-lookup endpoint.
 
-### Part 2 — Real-time recommendations
+### Part 2: Real-time recommendations
 
 Adds Kafka-backed intent features, materializes them to the same Lakebase online store, re-logs the
 ranker with streaming signals, and deploys the real-time ranking and Feature Serving endpoints.
@@ -78,15 +78,17 @@ Part 2 depends on Part 1. The included end-to-end job runs them in the correct o
 | `notebooks/benchmark/` | Serving-latency and event-to-online-freshness measurements |
 | `apps/recommender-ui/` | Customer-facing React/AppKit Databricks App |
 | `dashboards/` | AI/BI Dashboard for model and feature metrics |
-| `resources/` | Lakeflow Jobs, dashboard, and traffic-simulator bundle resources |
+| `resources/` | Lakeflow Jobs, dashboard, and app bundle resources |
+| `scripts/` | Cleanup script |
 
 ## Prerequisites
 
-- Databricks CLI with OAuth authentication and serverless compute enabled.
-- A Unity Catalog catalog on standard storage, with permission to create a schema.
-- Lakebase and route-optimized Model Serving enabled in the workspace.
-- A SQL warehouse for the AI/BI Dashboard and Databricks App.
-- For Part 2: a Unity Catalog Kafka connection and service credential with network access to MSK.
+- A Databricks workspace with Unity Catalog and serverless compute enabled
+- Databricks CLI installed and authenticated ([installation guide](https://docs.databricks.com/en/dev-tools/cli/install))
+- Node.js 20+ to build the app
+- Permissions to create Lakebase online stores, serving endpoints, and Databricks Apps
+- A SQL warehouse, and a service principal whose client ID and secret are stored in a secret scope of your choice
+- (For Part 2) A Kafka cluster, plus a Unity Catalog Kafka connection and service credential. The included code uses Amazon MSK with IAM auth.
 
 Batch and streaming features must use the **same catalog, schema, and online store**. The default
 deployment creates a per-user schema to avoid collisions in shared workspaces.
@@ -143,9 +145,45 @@ deployment creates a per-user schema to avoid collisions in shared workspaces.
 | `online_store_name` | `nbo` | Shared Lakebase online store for batch and streaming features |
 | `ranker_online_endpoint` | `nbo-ranker-online` | Part 1 ranking endpoint |
 | `ranker_realtime_endpoint` | `nbo-ranker-realtime` | Part 2 real-time ranking endpoint |
+| `query_sp_scope` | `nbo` | Secret scope holding the service principal's `sp_client_id` and `sp_client_secret` |
 
 Kafka connection, service credential, topic, warehouse, app, and streaming-gate values are also
 configurable in `databricks.yml`.
+
+## Cleanup
+
+When you're done, tear down everything:
+
+```bash
+bash scripts/cleanup.sh -p <profile> --var warehouse_id=<warehouse-id>
+```
+
+Pass the same `--var` values you used to deploy. The script lists what it will remove; re-run it with
+`--yes` to delete. This removes the feature materializations and their pipelines, the serving
+endpoints, the Lakebase online store, the schema, and the bundle's jobs, app, and dashboard. Delete
+the Kafka topic or cluster separately if you no longer need it.
+
+## Cost considerations
+
+Cost depends on:
+- Real-Time Mode pipelines (4) and the Kafka ingestion pipeline, only for Part 2
+- Model Serving endpoints (Small, scale to zero)
+- Lakebase online store
+- Kafka cluster, only for Part 2
+- Databricks App serving hours, only if you deploy the app
+
+Part 1 has no Kafka dependency and minimal cost, so start there.
+
+## How data freshness is measured
+
+```
+lag_ms = commit_time - event_time
+```
+
+- `event_time`: stamped by the probe at the moment it writes the Kafka record (`current_timestamp()`)
+- `commit_time`: written by the streaming aggregation when the value lands in the online store
+
+Let us know if this logic needs to be fine-tuned!
 
 ## Validate changes
 
@@ -156,6 +194,11 @@ npm ci
 npm run typecheck
 npx vitest run shared/recommendation.test.ts
 ```
+
+## Authors
+
+- **Tian Tan** ([tian.tan@databricks.com](mailto:tian.tan@databricks.com))
+- **Sixuan He** ([sixuan.he@databricks.com](mailto:sixuan.he@databricks.com))
 
 ## License
 
