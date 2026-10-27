@@ -14,7 +14,7 @@ const STEPS: Step[] = [
   { t: '2 · Streaming features', b: 'Mobile-app activity and other channels land in Kafka. The Aggregation Engine (Real-Time Mode) maintains Rolling and Sawtooth windows and writes them straight to Lakebase in about 100 ms. The same stream also lands in the Lakehouse for backfills, online store compaction, and training. Clicks on this website need no stream: the site sends them with the request.' },
   { t: '3 · Train point-in-time correct', b: 'create_training_set joins every feature from the Lakehouse as of each label timestamp, so the model never sees the future. The model is logged with feature lineage and registered in Unity Catalog.' },
   { t: '4 · Serve one request', b: 'The app sends only customer_id, the offers, the visitor\'s answers, and their clicks this visit (request-time features). The route-optimized endpoint fetches batch and streaming features from Lakebase by key, computes CustomUDF features on demand, and the ranker returns P(accept) per offer.' },
-  { t: '5 · Observe at scale', b: 'Everything at once: streaming and batch features flowing into one online store and one serving API. The Live stream tab times each event from Kafka to the first Feature Serving read that returns it.' },
+  { t: '5 · Observe at scale', b: 'Everything at once: streaming and batch features flowing into one online store and one serving API. The benchmark notebook measures it at scale: freshness for every event, read from the online table\'s own commit times, and Feature Serving p50/p95/p99 under a steady request loop. The Live stream tab shows the same path live.' },
 ];
 
 // Mirrors the Feature Store architecture slide.

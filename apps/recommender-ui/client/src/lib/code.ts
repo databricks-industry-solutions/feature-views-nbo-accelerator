@@ -8,6 +8,7 @@ import nb04 from '../../../../../notebooks/part1_feature_views/04_train_ranker.p
 import nb07 from '../../../../../notebooks/part2_realtime_two_stage/07_streaming_feature_views.py?raw';
 import nb09 from '../../../../../notebooks/part2_realtime_two_stage/09_realtime_serving.py?raw';
 import nb10 from '../../../../../notebooks/part2_realtime_two_stage/10_feature_serving_endpoint.py?raw';
+import bench from '../../../../../notebooks/benchmark/feature_serving_and_freshness_benchmark.py?raw';
 import streamTs from '../../../server/stream.ts?raw';
 import serverTs from '../../../server/server.ts?raw';
 
@@ -19,6 +20,7 @@ const SOURCES: Record<string, string> = {
   'notebooks/part2_realtime_two_stage/07_streaming_feature_views.py': nb07,
   'notebooks/part2_realtime_two_stage/09_realtime_serving.py': nb09,
   'notebooks/part2_realtime_two_stage/10_feature_serving_endpoint.py': nb10,
+  'notebooks/benchmark/feature_serving_and_freshness_benchmark.py': bench,
   'apps/recommender-ui/server/stream.ts': streamTs,
   'apps/recommender-ui/server/server.ts': serverTs,
 };
@@ -46,6 +48,7 @@ const P04 = 'notebooks/part1_feature_views/04_train_ranker.py';
 const P07 = 'notebooks/part2_realtime_two_stage/07_streaming_feature_views.py';
 const P09 = 'notebooks/part2_realtime_two_stage/09_realtime_serving.py';
 const P10 = 'notebooks/part2_realtime_two_stage/10_feature_serving_endpoint.py';
+const BENCH = 'notebooks/benchmark/feature_serving_and_freshness_benchmark.py';
 const STREAM = 'apps/recommender-ui/server/stream.ts';
 const SERVER = 'apps/recommender-ui/server/server.ts';
 
@@ -72,7 +75,10 @@ const SPECS: Spec[] = [
     { from: 'fe.create_feature_spec(name=SPEC', lines: 1 },
     { from: 'served = [ServedEntityInput(entity_name=SPEC', lines: 6 },
   ] },
-  { id: 'observe-timing', step: 4, label: 'Event timing', file: STREAM, ranges: [{ from: 'if (value !== undefined && value >= target.expect) {', lines: 9 }] },
+  // Observe at scale: the benchmark notebook's two measurements, freshness per event straight from the online
+  // table's commit times, and Feature Serving latency percentiles under a request loop.
+  { id: 'observe-freshness', step: 4, label: 'Freshness per event', file: BENCH, ranges: [{ from: 'probe = spark.sql(f"""', lines: 20 }] },
+  { id: 'observe-serving', step: 4, label: 'Serving p50/p95/p99', file: BENCH, ranges: [{ from: 'lat = []', lines: 8 }] },
 ];
 
 /** The lines of each range, dedented, joined with an ellipsis line. Throws if an anchor is missing. */
