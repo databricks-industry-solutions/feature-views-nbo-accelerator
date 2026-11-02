@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { phaseOf, pipelineStatus, startPipelines, turnOff, warmUp, type Pipe } from './pipelines';
+import { phaseOf, pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp, type Pipe } from './pipelines';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pipe = (id: string, role: Pipe['role'], state: string, update: string | null = null): Pipe => ({ id, label: id, role, state, update });
@@ -89,4 +89,15 @@ describe('live pipelines', () => {
     expect(pipelineStatus().queued).toBe(false);
     await turnOff();
   }, 10_000);
+
+  it('reports running pipelines to the Bank tab without waiting for the probe', async () => {
+    await turnOff();
+    const ws = workspace();
+    startPipelines({ api: ws.api, stream: 'c.s.stream', features: ['c.s.f1', 'c.s.f2'], probe: async () => 21_000 });
+    await warmUp();
+    expect(pipelineStatus().phase).toBe('starting'); // the probe has not passed
+    expect(pipelinesRunning()).toBe(true);
+    await turnOff();
+    expect(pipelinesRunning()).toBe(false);
+  });
 });

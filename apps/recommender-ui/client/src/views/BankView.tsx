@@ -13,6 +13,7 @@ import {
   type ProfileResponse,
   type RankedOffer,
   type RecommendCtx,
+  type StreamClick,
 } from '@/lib/api';
 import {
   ACCOUNT_META,
@@ -241,6 +242,10 @@ export function BankView(_props: { config: AppConfig | null }) {
   const [toast, setToast] = useState<{ o: Offer; reason: string } | null>(null);
   const [toastOn, setToastOn] = useState(false);
   const [trace, setTrace] = useState<TraceLine[]>([]);
+  const [streamClicks, setStreamClicks] = useState<StreamClick[]>([]);
+  const [streamLive, setStreamLive] = useState<boolean | null>(null);
+  const followingClicks = useRef(false);
+  const servedClicks = useRef(new Set<string>());
 
   const prevOrder = useRef<string[]>([]);
   const clicks = useRef<Click[]>([]); // this visit's website clicks (request-time feature)
@@ -356,10 +361,40 @@ export function BankView(_props: { config: AppConfig | null }) {
     refresh(null);
   }, [refresh]);
 
+  // Follow this visit's clicks through Kafka until Feature Serving returns each one, then re-rank so the
+  // ranker reads the new streaming value too.
+  const followClicks = useCallback(async () => {
+    if (followingClicks.current) return;
+    followingClicks.current = true;
+    try {
+      for (let i = 0; i < 80; i += 1) {
+        const r = await api.clicks();
+        setStreamClicks(r.clicks);
+        setStreamLive(r.live);
+        let served = false;
+        for (const c of r.clicks) {
+          if (c.status !== 'served' || servedClicks.current.has(c.id)) continue;
+          servedClicks.current.add(c.id);
+          served = true;
+          log(`  kafka -> clicks_10m ${c.before?.cust_clicks_10m ?? 0} -> ${c.after?.cust_clicks_10m ?? '—'} servable after ${fmtMs(c.servable_ms)} (stream)`);
+        }
+        if (served) void refresh(null);
+        if (!r.clicks.some((c) => c.status === 'pending')) break;
+        await new Promise((done) => setTimeout(done, 400));
+      }
+    } catch (e) {
+      log(`clicks         failed: ${(e as Error).message}`, true);
+    } finally {
+      followingClicks.current = false;
+    }
+  }, [log, refresh]);
+
   // A visitor interaction: the click is a request-time feature (ctx_session_cat_views), so the very next
-  // ranking request already reflects it. No round trip through a stream.
+  // ranking request already reflects it. It is also written to Kafka, where the Real-Time Mode pipelines
+  // update the visitor's streaming features (followClicks shows them landing).
   const emit = useCallback(
     async (type: EventType, cat: Category, label: string, pageOverride?: Page) => {
+      void api.click(cur.current.customerId, type, cat).then(() => followClicks(), (e: Error) => log(`click          failed: ${e.message}`, true));
       clicks.current = [...clicks.current, { cat, t: Date.now() }];
       const n = sessionCounts(clicks.current)[cat] ?? 0;
       log(`${type.padEnd(14)} ${cat.padEnd(13)} ${who(cur.current.customerId)} -> ctx_session_cat_views=${n} (request)`);
@@ -369,7 +404,7 @@ export function BankView(_props: { config: AppConfig | null }) {
         pageOverride ? { ...cur.current, page: pageOverride } : undefined,
       );
     },
-    [log, refresh],
+    [log, refresh, followClicks],
   );
 
   const go = (p: Page) => {
@@ -460,7 +495,7 @@ export function BankView(_props: { config: AppConfig | null }) {
   const header = (
     <div className="bank-top">
       <div className="bank-nav xr">
-        <span className="xr-label">Every click -&gt; request-time feature (this visit)</span>
+        <span className="xr-label">Every click -&gt; request-time feature + Kafka stream</span>
         <div className="logo" onClick={() => go('offermatch')}>
           <i />
           Lakeshore Bank
@@ -945,8 +980,24 @@ export function BankView(_props: { config: AppConfig | null }) {
       </div>
 
       <div className="trace">
-        <div className="th">
-          DATABRICKS LAYER · live request trace
+        <div className="th">DATABRICKS LAYER · your clicks -&gt; Kafka -&gt; streaming features</div>
+        {streamLive === false && <div className="err">Live pipelines off · Warm up on the Live stream tab to stream your clicks</div>}
+        {streamClicks.length ? (
+          streamClicks.slice(0, 4).map((c) => (
+            <div key={c.id} className={c.status === 'pending' ? 'new' : c.status === 'served' ? '' : 'err'}>
+              {new Date(c.sent_at).toTimeString().slice(0, 8)} {c.event_type.padEnd(14)} {CAT[c.category]?.label.padEnd(13)}{' '}
+              {c.status === 'served'
+                ? `clicks_10m ${c.before?.cust_clicks_10m ?? 0}->${c.after?.cust_clicks_10m ?? '—'} · cat_views_30d ${c.before?.cust_cat_views_30d ?? 0}->${c.after?.cust_cat_views_30d ?? '—'} · ${fmtMs(c.servable_ms)}`
+                : c.status === 'pending' ? 'in Kafka, waiting for Feature Serving…'
+                  : c.status === 'off' ? 'not streamed (pipelines off)'
+                    : c.status === 'missing' ? 'not servable after 15 s' : `failed: ${c.error ?? ''}`}
+            </div>
+          ))
+        ) : (
+          <div>{streamLive === false ? '' : 'Click around the site to stream your clicks.'}</div>
+        )}
+        <div className="th" style={{ marginTop: 8 }}>
+          live request trace
         </div>
         {traceLines.length ? (
           traceLines.map((l, i) => (

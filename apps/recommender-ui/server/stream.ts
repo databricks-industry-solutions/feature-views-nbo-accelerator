@@ -194,6 +194,13 @@ function matches(feature: FeatureName, event: ClickEvent): boolean {
 // Untracked load events written since measuring began (counted in events/s, never timed).
 const loadSamples: { at: number; n: number }[] = [];
 
+/** Write events to Kafka without live-traffic tracking (the Lakeshore Bank tab's real visitor clicks). */
+export async function produceEvents(events: ClickEvent[]): Promise<void> {
+  const d = deps;
+  if (!d) throw new Error('stream module not started');
+  await (d.produce ? d.produce(events) : produceKafka(d, events));
+}
+
 export async function send(events: ClickEvent[], source: string, load: ClickEvent[] = []): Promise<Tracked[]> {
   const d = deps;
   if (!d) throw new Error('stream module not started');

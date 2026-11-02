@@ -138,6 +138,13 @@ export function pipelineStatus(): PipelineStatus {
   };
 }
 
+/** Whether the Real-Time Mode pipelines are running, without the freshness probe that gates Ready on the Live
+ *  stream page. null until the first read. The Lakeshore Bank tab uses this, since it never polls the probe. */
+export function pipelinesRunning(): boolean | null {
+  if (Date.now() - refreshedAt > REFRESH_MS) void refresh();
+  return loaded ? phaseOf(pipes, false) === 'ready' : null;
+}
+
 /** Warm up: start every live pipeline that is not already running. */
 export async function warmUp(): Promise<PipelineStatus> {
   actionError = null;

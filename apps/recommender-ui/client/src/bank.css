@@ -206,7 +206,7 @@
 .nbo2.xray .bank-nav > .xr-label { left: 24px; right: auto; top: auto; bottom: -10px; }
 .nbo2 .xr-label { display: none; }
 .nbo2.xray .xr-label { display: block; position: absolute; z-index: 5; top: -12px; right: 8px; background: var(--red); color: #fff; font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 6px; white-space: nowrap; }
-.nbo2 .trace { display: none; position: fixed; right: 18px; bottom: 18px; width: 400px; z-index: 56; background: #0b111b; color: #cbd5e1; border-radius: 14px; padding: 10px 12px; font-family: ui-monospace, monospace; font-size: 10.8px; box-shadow: 0 14px 40px rgba(0,0,0,.35); }
+.nbo2 .trace { display: none; position: fixed; right: 18px; bottom: 18px; width: 620px; max-width: calc(100vw - 36px); z-index: 56; background: #0b111b; color: #cbd5e1; border-radius: 14px; padding: 10px 12px; font-family: ui-monospace, monospace; font-size: 10.8px; box-shadow: 0 14px 40px rgba(0,0,0,.35); }
 .nbo2.xray .trace { display: block; }
 .nbo2 .trace .th { color: var(--red); font-weight: 700; margin-bottom: 6px; font-family: -apple-system, sans-serif; font-size: 11px; letter-spacing: .4px; }
 .nbo2 .trace div { white-space: pre; overflow: hidden; text-overflow: ellipsis; line-height: 1.6; }

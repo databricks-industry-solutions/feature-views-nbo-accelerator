@@ -131,6 +131,20 @@ export interface PipelineStatus {
   error: string | null;
 }
 
+// A real Lakeshore Bank click, written to Kafka and followed until Feature Serving returns it.
+export interface StreamClick {
+  id: string;
+  customer_id: string;
+  event_type: string;
+  category: Category;
+  sent_at: number;
+  status: 'pending' | 'served' | 'missing' | 'off' | 'error';
+  before?: { cust_clicks_10m?: number; cust_cat_views_30d?: number };
+  after?: { cust_clicks_10m?: number; cust_cat_views_30d?: number };
+  servable_ms?: number;
+  error?: string;
+}
+
 export interface FeatureRow {
   name: string;
   window: string;
@@ -180,6 +194,9 @@ export const api = {
     call<RecommendResponse>('/api/recommend', { customer_id, session_id: SESSION_ID, ctx }),
   profile: (customer_id: string | null) =>
     call<ProfileResponse>('/api/profile', { customer_id, session_id: SESSION_ID }),
+  click: (customer_id: string | null, event_type: EventType, category: Category) =>
+    call<StreamClick>('/api/click', { customer_id, session_id: SESSION_ID, event_type, category }),
+  clicks: () => call<{ clicks: StreamClick[]; live: boolean }>(`/api/clicks?session_id=${encodeURIComponent(SESSION_ID)}`),
   traffic: () => call<TrafficState>('/api/traffic'),
   trafficStart: (eps: number, seconds: number) => call<TrafficState>('/api/traffic', { eps, seconds }),
   trafficStop: () => call<TrafficState>('/api/traffic', undefined, 'DELETE'),

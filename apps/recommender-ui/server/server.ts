@@ -1,7 +1,8 @@
 import { createApp, analytics, server } from '@databricks/appkit';
 import { metrics } from './realtime.js';
-import { cursorNow, lastRunSnapshot, lastVisitAt, latestFinished, pointsSince, probeFreshness, startStream, startTraffic, stats, stopTraffic, touch, trafficState, VISIT_WINDOW_MS } from './stream.js';
-import { pipelineStatus, startPipelines, turnOff, warmUp } from './pipelines.js';
+import { sessionClicks, startClicks, trackClick } from './clicks.js';
+import { cursorNow, lastRunSnapshot, lastVisitAt, latestFinished, pointsSince, probeFreshness, produceEvents, startStream, startTraffic, stats, stopTraffic, touch, trafficState, VISIT_WINDOW_MS } from './stream.js';
+import { pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp } from './pipelines.js';
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
 // ---------------------------------------------------------------------------
@@ -568,6 +569,26 @@ createApp({
       });
 
       // The visitor's features through the Feature Serving endpoint (stored + streaming + CustomUDF).
+      // A real Lakeshore Bank click: written to Kafka, then followed until Feature Serving returns it.
+      app.post('/api/click', (req, res) => {
+        const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string; event_type?: string; category?: string };
+        const category = String(b.category ?? '');
+        if (!CATEGORIES.includes(category)) {
+          res.status(400).json({ error: 'unknown category' });
+          return;
+        }
+        const eventType = String(b.event_type ?? 'page_view').replace(/[^a-z_]/g, '').slice(0, 32) || 'page_view';
+        try {
+          res.json(trackClick(String(b.session_id ?? 'anon'), visitorId(b.customer_id, b.session_id), eventType, category));
+        } catch (e) {
+          res.status(502).json({ error: String(e).slice(0, 300) });
+        }
+      });
+      app.get('/api/clicks', (req, res) => {
+        // live is false only when the pipelines are known to be off; null (not read yet) counts as on.
+        res.json({ clicks: sessionClicks(String(req.query.session_id ?? 'anon')), live: pipelinesRunning() !== false });
+      });
+
       app.post('/api/profile', async (req, res) => {
         const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string };
         try {
@@ -754,6 +775,17 @@ createApp({
 
     // Live traffic: the app produces to Kafka and tracks each event until Feature Serving returns it.
     // Traffic only flows after Start live traffic.
+    startClicks({
+      produce: produceEvents,
+      read: async (customerId, category) => {
+        const { json, readAt } = await queryEndpoint(FEATURE_ENDPOINT, [{ customer_id: customerId, product_category: category }]);
+        const row = ((Array.isArray(json.outputs) ? json.outputs : Array.isArray(json.predictions) ? json.predictions : [])[0] ?? {}) as Record<string, unknown>;
+        const num = (v: unknown) => (v === null || v === undefined || Number.isNaN(Number(v)) ? undefined : Number(v));
+        return { values: { cust_clicks_10m: num(row.cust_clicks_10m), cust_cat_views_30d: num(row.cust_cat_views_30d) }, readAt };
+      },
+      live: () => pipelinesRunning() !== false,
+    });
+
     startStream({
       host: HOST, getToken, connection: KAFKA_CONNECTION, credential: KAFKA_CREDENTIAL, topic: KAFKA_TOPIC,
       lookup: async (rows) => {
