@@ -49,7 +49,9 @@ const LIVE_STREAM = process.env.LIVE_STREAM ?? 'session_events_stream';
 const LIVE_FEATURES = (process.env.LIVE_FEATURES ?? 'cust_clicks_10m,cust_cat_views_10m,cust_mobile_cat_views_10m,cust_cat_views_30d')
   .split(',').map((f) => f.trim()).filter(Boolean);
 const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
-const FEATURE_READ_CHUNK = 25; // rows per Feature Serving request on the Live stream page
+// Live stream reads: one row (one visitor key) per Feature Serving request, at most 4 in flight, so each latency
+// sample is one key's lookup. 8 in flight added ~5 ms to p95 without raising read throughput.
+const FEATURE_READ_PARALLEL = 4;
 const FQ = `\`${CATALOG}\`.${SCHEMA}`;
 
 const SYSTEM = `You are the Next-Best-Offer assistant for a retail bank, embedded in a
@@ -764,17 +766,19 @@ createApp({
         const resolveWaitMs = Date.now() - w0;
         nextFeatureEndpoint = resolveFeatureEndpoint();
         nextFeatureEndpoint.catch(() => undefined);
-        // Same as the card fraud console: parallel chunks of at most 25 rows. One large request is slow (each
-        // row fans out to every online table in the FeatureSpec), so a 100-row read would inflate the latency
-        // the Live stream tile reports and hold back fresh events.
-        const chunks = Array.from({ length: Math.ceil(rows.length / FEATURE_READ_CHUNK) }, (_, i) =>
-          rows.slice(i * FEATURE_READ_CHUNK, (i + 1) * FEATURE_READ_CHUNK));
-        const reads = await Promise.all(chunks.map((c) => queryEndpoint(FEATURE_ENDPOINT, c, ep)));
+        const reads: Awaited<ReturnType<typeof queryEndpoint>>[] = new Array(rows.length);
+        let next = 0;
+        await Promise.all(Array.from({ length: Math.min(FEATURE_READ_PARALLEL, rows.length) }, async () => {
+          while (next < rows.length) {
+            const i = next++;
+            reads[i] = await queryEndpoint(FEATURE_ENDPOINT, [rows[i]], ep);
+          }
+        }));
         const slowest = Math.max(...reads.map((r) => r.latencyMs));
-        if (resolveWaitMs > 300 || slowest > 300) console.warn(`[feature-read] waited ${resolveWaitMs} ms for endpoint lookup, slowest data-plane read ${slowest} ms (${chunks.length} chunks)`);
+        if (resolveWaitMs > 300 || slowest > 300) console.warn(`[feature-read] waited ${resolveWaitMs} ms for endpoint lookup, slowest data-plane read ${slowest} ms (${rows.length} rows)`);
         const outputs = reads.flatMap(({ json }) =>
           (Array.isArray(json.outputs) ? json.outputs : Array.isArray(json.predictions) ? json.predictions : []) as Record<string, unknown>[]);
-        // readAt: the latest chunk midpoint, so a served time is never placed earlier than its read.
+        // readAt: the latest request midpoint, so a served time is never placed earlier than its read.
         return { outputs, latencyMs: slowest, callsMs: reads.map((r) => r.latencyMs), readAt: Math.max(...reads.map((r) => r.readAt)) };
       },
       customers: getSampleCustomers,

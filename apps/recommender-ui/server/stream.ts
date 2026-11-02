@@ -13,7 +13,7 @@ export interface StreamDeps {
   connection: string; // UC Kafka connection holding bootstrap_servers
   credential: string; // UC service credential for MSK IAM
   topic: string;
-  // callsMs: one entry per Feature Serving request when the rows were split into chunks.
+  // callsMs: one entry per Feature Serving request (one row each on the Live stream page).
   lookup: (rows: Record<string, unknown>[]) => Promise<{ outputs: Record<string, unknown>[]; latencyMs: number; callsMs?: number[]; readAt?: number }>;
   customers: () => Promise<string[]>;
   produce?: (events: ClickEvent[]) => Promise<void>; // tests inject a fake Kafka
