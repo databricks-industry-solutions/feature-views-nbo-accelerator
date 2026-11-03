@@ -23,7 +23,7 @@ export interface PipelineTimesDeps {
 const RESOLVE_MS = 5 * 60_000;
 let deps: PipelineTimesDeps | null = null;
 let pool: Promise<Pool> | null = null;
-let tables: { at: number; clicks?: string; cat30d?: string } | null = null;
+let tables: { at: number; clicks?: string; cat30d?: string; mobile?: string } | null = null;
 let lastError: string | null = null;
 
 export function startPipelineTimes(d: PipelineTimesDeps) {
@@ -62,7 +62,7 @@ export async function warmPipelineTimes(): Promise<void> {
   if (!d) return;
   try {
     if (!tables || Date.now() - tables.at > RESOLVE_MS) {
-      tables = { at: Date.now(), clicks: await streamingTable(d, 'cust_clicks_10m'), cat30d: await streamingTable(d, 'cust_cat_views_30d') };
+      tables = { at: Date.now(), clicks: await streamingTable(d, 'cust_clicks_10m'), cat30d: await streamingTable(d, 'cust_cat_views_30d'), mobile: await streamingTable(d, 'cust_mobile_cat_views_10m') };
     }
     await (await getPool(d)).query('SELECT 1');
     lastError = null;
@@ -82,7 +82,7 @@ export async function watchPipeline(customerId: string, category: string, eventM
   if (!d) return null;
   try {
     if (!tables || Date.now() - tables.at > RESOLVE_MS) {
-      tables = { at: Date.now(), clicks: await streamingTable(d, 'cust_clicks_10m'), cat30d: await streamingTable(d, 'cust_cat_views_30d') };
+      tables = { at: Date.now(), clicks: await streamingTable(d, 'cust_clicks_10m'), cat30d: await streamingTable(d, 'cust_cat_views_30d'), mobile: await streamingTable(d, 'cust_mobile_cat_views_10m') };
     }
     const p = await getPool(d);
     const s = ident(d.schema);
@@ -124,3 +124,43 @@ export async function watchPipeline(customerId: string, category: string, eventM
     return null;
   }
 }
+
+export interface FreshRow { event_ms: number; commit_ms: number }
+/** Data freshness for Live stream's timed events, the README's metric: lag = commit_time - event_time, read from
+ *  each key's row in the streaming online table. Every timed event has its own fresh key, so the row holds that
+ *  event's first commit. Returns rows by customer_id (click count) and by "customer_id|category" (mobile views). */
+export async function freshnessRows(clickKeys: string[], mobileKeys: { customer_id: string; category: string }[]):
+  Promise<{ clicks: Map<string, FreshRow>; mobile: Map<string, FreshRow> } | null> {
+  const d = deps;
+  if (!d) return null;
+  try {
+    if (!tables || Date.now() - tables.at > RESOLVE_MS) {
+      tables = { at: Date.now(), clicks: await streamingTable(d, 'cust_clicks_10m'), cat30d: await streamingTable(d, 'cust_cat_views_30d'), mobile: await streamingTable(d, 'cust_mobile_cat_views_10m') };
+    }
+    const p = await getPool(d);
+    const s = ident(d.schema);
+    const clicks = new Map<string, FreshRow>();
+    const mobile = new Map<string, FreshRow>();
+    const row = (r: { event_ms: string; commit_ms: string }) => ({ event_ms: Number(r.event_ms), commit_ms: Number(r.commit_ms) });
+    await Promise.all([
+      tables.clicks && clickKeys.length && p.query(
+        `SELECT customer_id, EXTRACT(EPOCH FROM event_time) * 1000 AS event_ms, EXTRACT(EPOCH FROM commit_time) * 1000 AS commit_ms
+         FROM ${s}.${ident(tables.clicks)} WHERE customer_id = ANY($1::text[]) AND event_time IS NOT NULL`, [clickKeys]).then(({ rows }) => {
+        for (const r of rows as { customer_id: string; event_ms: string; commit_ms: string }[]) clicks.set(r.customer_id, row(r));
+      }),
+      tables.mobile && mobileKeys.length && p.query(
+        `SELECT t.customer_id, t.product_category, EXTRACT(EPOCH FROM t.event_time) * 1000 AS event_ms, EXTRACT(EPOCH FROM t.commit_time) * 1000 AS commit_ms
+         FROM ${s}.${ident(tables.mobile)} t JOIN unnest($1::text[], $2::text[]) AS k(c, p) ON t.customer_id = k.c AND t.product_category = k.p
+         WHERE t.event_time IS NOT NULL`, [mobileKeys.map((k) => k.customer_id), mobileKeys.map((k) => k.category)]).then(({ rows }) => {
+        for (const r of rows as { customer_id: string; product_category: string; event_ms: string; commit_ms: string }[]) mobile.set(`${r.customer_id}|${r.product_category}`, row(r));
+      }),
+    ]);
+    lastError = null;
+    return { clicks, mobile };
+  } catch (e) {
+    lastError = String(e).slice(0, 300);
+    tables = null;
+    return null;
+  }
+}
+

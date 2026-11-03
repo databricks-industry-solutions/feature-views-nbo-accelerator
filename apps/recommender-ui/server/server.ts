@@ -1,8 +1,8 @@
 import { createApp, analytics, server } from '@databricks/appkit';
 import { metrics } from './realtime.js';
 import { sessionClicks, startClicks, trackClick } from './clicks.js';
-import { pipelineTimesError, startPipelineTimes, warmPipelineTimes, watchPipeline } from './pipelineTimes.js';
-import { cursorNow, lastRunSnapshot, lastVisitAt, latestFinished, pointsSince, probeFreshness, produceEvents, startStream, startTraffic, stats, stopTraffic, touch, trafficState, VISIT_WINDOW_MS } from './stream.js';
+import { freshnessRows, pipelineTimesError, startPipelineTimes, warmPipelineTimes, watchPipeline } from './pipelineTimes.js';
+import { cursorNow, freshPointsSince, lastRunSnapshot, lastVisitAt, latestFinished, pointsSince, probeFreshness, produceEvents, startStream, startTraffic, stats, stopTraffic, touch, trafficState, VISIT_WINDOW_MS } from './stream.js';
 import { pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp } from './pipelines.js';
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
@@ -615,7 +615,7 @@ createApp({
         const cursor = Number(req.query.cursor ?? 0);
         res.json({
           server_ms: Date.now(), cursor: cursorNow(), stats: stats(), traffic: trafficState(),
-          feed: latestFinished(40), points: pointsSince(cursor),
+          feed: latestFinished(40), points: pointsSince(cursor), fresh_points: freshPointsSince(cursor),
           // While traffic is off or the pipeline is warming, the last run's frozen numbers (server memory).
           last_run: trafficState().running && !trafficState().warming_up ? null : lastRunSnapshot(),
           pipelines: pipelineStatus(),
@@ -830,6 +830,7 @@ createApp({
         return { outputs, latencyMs: slowest, callsMs: reads.map((r) => r.latencyMs), readAt: Math.max(...reads.map((r) => r.readAt)) };
       },
       customers: getSampleCustomers,
+      freshness: LAKEBASE_ENDPOINT ? freshnessRows : undefined,
     });
   },
 }).catch(console.error);

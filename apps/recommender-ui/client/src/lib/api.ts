@@ -88,7 +88,7 @@ export interface ProfileResponse {
 // Live traffic, same contract as the card fraud console: the app writes each click event to Kafka and
 // tracks it until the Feature Serving endpoint returns it.
 export interface TrafficState { running: boolean; eps?: number; ends_in_s?: number; warming_up?: boolean; warm_left_s?: number; error?: string | null }
-export interface TrackedTarget { feature: string; key: string; expect: number; served_at?: number; value?: number; resolution_ms?: number }
+export interface TrackedTarget { feature: string; key: string; expect: number; served_at?: number; value?: number; resolution_ms?: number; fresh_ms?: number }
 export interface Tracked {
   seq: number; source: string; sent_at: number; event_ms: number; status: 'pending' | 'served' | 'missing';
   event: {
@@ -100,6 +100,8 @@ export interface Tracked {
 export interface LiveStats {
   sent: number; missing: number; events_per_s: number; measured_per_s?: number; pending: number; poll_error: string | null; n: number;
   served_p50: number | null; served_p95: number | null; served_p99: number | null; resolution_p50?: number | null;
+  // Data freshness per timed event: commit_time - event_time from the streaming online table.
+  freshness_p50: number | null; freshness_p95: number | null; freshness_p99: number | null; freshness_n: number;
   feature_serving_p50?: number | null; feature_serving_p95?: number | null; feature_serving_p99?: number | null;
   feature_serving_n?: number;
   feature_serving_window_s?: number;
@@ -111,11 +113,13 @@ export interface LiveStats {
 export interface LastRun {
   started_at: number; ended_at: number; eps: number;
   stats: LiveStats; feed: Tracked[]; points: { id: string; t: number; v: number }[];
+  fresh_points: { id: string; t: number; v: number }[];
 }
 export interface Live {
   server_ms: number; cursor: number; stats: LiveStats; traffic: TrafficState;
   feed: Tracked[]; // newest 40 finished events, newest first
   points: { id: string; t: number; v: number }[]; // every target served since the request's cursor
+  fresh_points: { id: string; t: number; v: number }[]; // data freshness per event since the cursor
   last_run: LastRun | null; // frozen numbers of the last finished run, while traffic is off
   pipelines: PipelineStatus;
   serving: { status: 'WARMING' | 'READY' | 'ERROR'; at: number | null; error: string | null };

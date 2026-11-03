@@ -16,6 +16,10 @@ export interface StreamDeps {
   // callsMs: one entry per Feature Serving request (one row each on the Live stream page).
   lookup: (rows: Record<string, unknown>[]) => Promise<{ outputs: Record<string, unknown>[]; latencyMs: number; callsMs?: number[]; readAt?: number }>;
   customers: () => Promise<string[]>;
+  // Data freshness (README metric, lag = commit_time - event_time): each timed key's row in the streaming online
+  // tables. Absent or null when Lakebase is not readable; the tiles then show only the Feature Serving timing.
+  freshness?: (clickKeys: string[], mobileKeys: { customer_id: string; category: string }[]) =>
+    Promise<{ clicks: Map<string, { event_ms: number; commit_ms: number }>; mobile: Map<string, { event_ms: number; commit_ms: number }> } | null>;
   produce?: (events: ClickEvent[]) => Promise<void>; // tests inject a fake Kafka
   warmupMs?: number;
 }
@@ -44,6 +48,7 @@ interface Target {
   last_miss?: number;
   served_at?: number;
   resolution_ms?: number;
+  fresh_ms?: number; // data freshness: the online table's commit_time - this event's event_time
 }
 export interface Tracked {
   seq: number;
@@ -178,6 +183,8 @@ const recent: Tracked[] = [];
 // Every served target and every finished event, in the order they resolved. The browser reads these with a
 // cursor, so a slow or late poll never drops a point from the chart or a row from the table.
 const servedLog: { at: number; id: string; t: number; v: number }[] = [];
+// Data freshness per timed event (click count), for the chart: same cursor as servedLog.
+const freshLog: { at: number; id: string; t: number; v: number }[] = [];
 const finished: { at: number; tracked: Tracked }[] = [];
 let lastAt = 0;
 const stamp = () => (lastAt = Math.max(Date.now(), lastAt + 0.001)); // strictly increasing cursor values
@@ -299,6 +306,7 @@ async function poll(): Promise<void> {
   }
   const cut = Date.now() - RECENT_RETENTION_MS;
   while (servedLog.length && servedLog[0].at < cut) servedLog.shift();
+  while (freshLog.length && freshLog[0].at < cut) freshLog.shift();
   if (finished.length > 400) finished.splice(0, finished.length - 400);
 }
 
@@ -313,6 +321,7 @@ export function stats(windowMs = 60_000) {
   const since = now - windowMs;
   const warmFrom = traffic ? traffic.started : 0;
   const lag: number[] = [];
+  const fresh: number[] = [];
   const resolution: number[] = [];
   let sent = 0, backgroundSent = 0, missing = 0;
   for (const tracked of recent) {
@@ -323,6 +332,8 @@ export function stats(windowMs = 60_000) {
     // The first seconds after Start hit a cold pipeline; they stay in the chart and table, not the percentiles.
     if (tracked.sent_at < warmFrom) continue;
     for (const target of tracked.targets) {
+      // One freshness sample per event: its click-count row, the same table the benchmark notebook reads.
+      if (target.feature === 'cust_clicks_10m' && target.fresh_ms !== undefined) fresh.push(target.fresh_ms);
       if (target.served_at === undefined) continue;
       lag.push(target.served_at - tracked.event_ms);
       resolution.push(target.resolution_ms ?? 0);
@@ -341,6 +352,12 @@ export function stats(windowMs = 60_000) {
     measured_per_s: traffic ? backgroundSent / observedS : 0,
     pending: pending.size,
     poll_error: pollError || null,
+    // Data freshness, lag = commit_time - event_time per timed event (README, "How data freshness is measured").
+    freshness_p50: pct(fresh, 50),
+    freshness_p95: pct(fresh, 95),
+    freshness_p99: pct(fresh, 99),
+    freshness_n: fresh.length,
+    // Event -> the first Feature Serving read that returned it: freshness plus the app's read scheduling.
     served_p50: pct(lag, 50),
     served_p95: pct(lag, 95),
     served_p99: pct(lag, 99),
@@ -365,6 +382,12 @@ export function stats(windowMs = 60_000) {
 }
 
 // Chart points resolved after the browser's cursor (all of them, never capped).
+export function freshPointsSince(cursor: number) {
+  let i = freshLog.length;
+  while (i > 0 && freshLog[i - 1].at > cursor) i -= 1;
+  return freshLog.slice(i).map(({ id, t, v }) => ({ id, t, v }));
+}
+
 export function pointsSince(cursor: number) {
   let i = servedLog.length;
   while (i > 0 && servedLog[i - 1].at > cursor) i -= 1;
@@ -491,6 +514,7 @@ export async function startTraffic(eps: number, seconds: number): Promise<void> 
   pending.clear();
   recent.length = 0;
   servedLog.length = 0;
+  freshLog.length = 0;
   finished.length = 0;
   servingSamples.length = 0;
   loadSamples.length = 0;
@@ -531,6 +555,7 @@ export async function startTraffic(eps: number, seconds: number): Promise<void> 
 export interface LastRun {
   started_at: number; ended_at: number; eps: number;
   stats: ReturnType<typeof stats>; feed: Tracked[]; points: { id: string; t: number; v: number }[];
+  fresh_points: { id: string; t: number; v: number }[];
 }
 let lastRun: LastRun | null = null;
 export const lastRunSnapshot = () => lastRun;
@@ -543,6 +568,7 @@ export function stopTraffic(): void {
       lastRun = {
         started_at: traffic.started, ended_at: Date.now(), eps: traffic.eps, stats: s,
         feed: latestFinished(40), points: servedLog.map(({ id, t, v }) => ({ id, t, v })),
+        fresh_points: freshLog.map(({ id, t, v }) => ({ id, t, v })),
       };
     }
   }
@@ -595,8 +621,44 @@ export async function probeFreshness(timeoutMs = 30_000): Promise<number> {
   throw new Error(`test event not servable after ${timeoutMs / 1000} s`);
 }
 
+// Read data freshness for timed events that do not have it yet, in batches. Timed events use fresh keys
+// (cust_live_*), one event each, so each key's online row holds that event's first commit.
+let freshBusy = false;
+async function readFreshness(d: StreamDeps) {
+  if (!d.freshness || freshBusy) return;
+  const since = Date.now() - 30_000;
+  const todo: { t: Tracked; target: Target }[] = [];
+  for (let i = recent.length - 1; i >= 0 && todo.length < 400; i -= 1) {
+    const t = recent[i];
+    if (t.sent_at < since) break;
+    if (!t.event.customer_id.startsWith('cust_live_')) continue;
+    for (const target of t.targets) if (target.fresh_ms === undefined) todo.push({ t, target });
+  }
+  if (!todo.length) return;
+  freshBusy = true;
+  try {
+    const clickKeys = [...new Set(todo.filter((x) => x.target.feature === 'cust_clicks_10m').map((x) => x.t.event.customer_id))];
+    const mobileKeys = todo.filter((x) => x.target.feature === 'cust_mobile_cat_views_10m')
+      .map((x) => ({ customer_id: x.t.event.customer_id, category: x.t.event.product_category }));
+    const rows = await d.freshness(clickKeys, mobileKeys);
+    if (!rows) return;
+    for (const { t, target } of todo) {
+      const r = target.feature === 'cust_clicks_10m' ? rows.clicks.get(t.event.customer_id) : rows.mobile.get(target.key);
+      // Only this event's row counts (its own event_time); the commit_time - event_time lag is the freshness.
+      if (!r || Math.abs(r.event_ms - t.event_ms) >= 1) continue;
+      target.fresh_ms = Math.max(0, Math.round(r.commit_ms - t.event_ms));
+      if (target.feature === 'cust_clicks_10m') freshLog.push({ at: stamp(), id: `${t.event.event_id}|fresh`, t: t.sent_at, v: target.fresh_ms });
+    }
+  } catch {
+    // Freshness is best effort; the next pass retries.
+  } finally {
+    freshBusy = false;
+  }
+}
+
 export function startStream(d: StreamDeps) {
   deps = d;
+  setInterval(() => { if (traffic || recent.length) void readFreshness(d); }, 300);
   (function loop() {
     poll().then(() => { pollError = ''; }, (error) => { pollError = String(error).slice(0, 300); })
       .finally(() => setTimeout(loop, pending.size ? 0 : traffic ? 10 : 500));
