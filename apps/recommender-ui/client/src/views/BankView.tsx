@@ -15,6 +15,7 @@ import {
   type RecommendCtx,
   type StreamClick,
 } from '@/lib/api';
+import { StreamFeatures } from './StreamFeatures';
 import {
   ACCOUNT_META,
   ACTION_TEXT,
@@ -246,6 +247,8 @@ export function BankView(_props: { config: AppConfig | null }) {
   const [streamLive, setStreamLive] = useState<boolean | null>(null);
   const followingClicks = useRef(false);
   const servedClicks = useRef(new Set<string>());
+  const clickLabels = useRef(new Map<string, string>()); // click id -> what the visitor did, for the card
+  const topCat = useRef<Category | null>(null); // category of the current top match
 
   const prevOrder = useRef<string[]>([]);
   const clicks = useRef<Click[]>([]); // this visit's website clicks (request-time feature)
@@ -342,6 +345,7 @@ export function BankView(_props: { config: AppConfig | null }) {
       }
       prevOrder.current = order;
       prevTop.current = top?.offer_text ?? null;
+      topCat.current = top?.product_category ?? topCat.current;
       setRank({ offers, latency_ms: isNum(r.latency_ms) ? r.latency_ms : null, endpoint: r.endpoint, ctx });
       log(`  re-ranked ${offers.length} offers ${fmtMs(r.latency_ms)}`);
     },
@@ -376,7 +380,7 @@ export function BankView(_props: { config: AppConfig | null }) {
           if (c.status !== 'served' || servedClicks.current.has(c.id)) continue;
           servedClicks.current.add(c.id);
           served = true;
-          log(`  kafka -> clicks_10m ${c.before?.cust_clicks_10m ?? 0} -> ${c.after?.cust_clicks_10m ?? '—'} servable after ${fmtMs(c.servable_ms)} (stream)`);
+          log(`  kafka -> clicks_10m ${c.before?.cust_clicks_10m ?? 0} -> ${c.after?.cust_clicks_10m ?? '—'} in Feature Serving after ${fmtMs(c.total_ms)} (stream)`);
         }
         if (served) void refresh(null);
         if (!r.clicks.some((c) => c.status === 'pending')) break;
@@ -389,12 +393,35 @@ export function BankView(_props: { config: AppConfig | null }) {
     }
   }, [log, refresh]);
 
+  // Whether the live pipelines are on, so the streaming card can say so before the first click.
+  useEffect(() => {
+    const check = () => api.clicks().then((r) => setStreamLive(r.live), () => undefined);
+    void check();
+    const t = setInterval(check, 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Every click on the site is written to Kafka as one event, where the Real-Time Mode pipelines update the
+  // visitor's streaming features; the Streaming Feature Views card shows them landing (followClicks).
+  const stream = useCallback(
+    (type: EventType, cat: Category, text: string) => {
+      void api.click(cur.current.customerId, type, cat).then(
+        (c) => { clickLabels.current.set(c.id, text); void followClicks(); },
+        (e: Error) => log(`click          failed: ${e.message}`, true),
+      );
+    },
+    [followClicks, log],
+  );
+  // Inputs without a product of their own count toward the visitor's goal, else their current top match.
+  const contextCat = (): Category => cur.current.answers.goal ?? topCat.current ?? 'credit_card';
+
   // A visitor interaction: the click is a request-time feature (ctx_session_cat_views), so the very next
-  // ranking request already reflects it. It is also written to Kafka, where the Real-Time Mode pipelines
-  // update the visitor's streaming features (followClicks shows them landing).
+  // ranking request already reflects it. It is also streamed to Kafka (above).
   const emit = useCallback(
     async (type: EventType, cat: Category, label: string, pageOverride?: Page) => {
-      void api.click(cur.current.customerId, type, cat).then(() => followClicks(), (e: Error) => log(`click          failed: ${e.message}`, true));
+      stream(type, cat, type === 'page_view' ? `You opened the ${label}`
+        : type === 'add_to_cart' ? `You started an application for ${label}`
+          : type === 'product_view' ? `You viewed ${label}` : `You set ${label}`);
       clicks.current = [...clicks.current, { cat, t: Date.now() }];
       const n = sessionCounts(clicks.current)[cat] ?? 0;
       log(`${type.padEnd(14)} ${cat.padEnd(13)} ${who(cur.current.customerId)} -> ctx_session_cat_views=${n} (request)`);
@@ -404,13 +431,14 @@ export function BankView(_props: { config: AppConfig | null }) {
         pageOverride ? { ...cur.current, page: pageOverride } : undefined,
       );
     },
-    [log, refresh, followClicks],
+    [log, refresh, stream],
   );
 
   const go = (p: Page) => {
     setPage(p);
     window.scrollTo(0, 0);
-    if (p !== 'offermatch') emit('page_view', p, `${CAT[p].label.toLowerCase()} page`, p);
+    if (p !== 'offermatch') emit('page_view', p, `${CAT[p].label} page`, p);
+    else stream('page_view', contextCat(), 'You opened OfferMatch');
   };
   const apply = (o: Offer) => {
     setActionModal({ mode: 'apply', offer: o });
@@ -447,6 +475,7 @@ export function BankView(_props: { config: AppConfig | null }) {
   };
 
   const find = () => {
+    stream('search', contextCat(), `You pressed "${searched ? 'Update my offers' : 'Find my offers'}"`);
     const first = !searched;
     setSearched(true);
     setPage('offermatch');
@@ -554,7 +583,10 @@ export function BankView(_props: { config: AppConfig | null }) {
             <button
               key={g.v}
               className={`opt${answers.goal === g.v ? ' on' : ''}`}
-              onClick={() => setAnswers((a) => ({ ...a, goal: a.goal === g.v ? null : g.v }))}
+              onClick={() => {
+                if (answers.goal !== g.v) stream('preference_change', g.v, `You chose "${g.label}"`);
+                setAnswers((a) => ({ ...a, goal: a.goal === g.v ? null : g.v }));
+              }}
             >
               {g.label}
             </button>
@@ -568,7 +600,10 @@ export function BankView(_props: { config: AppConfig | null }) {
               <button
                 key={c.v}
                 className={`opt${answers.credit === c.v ? ' on' : ''}`}
-                onClick={() => setAnswers((a) => ({ ...a, credit: c.v }))}
+                onClick={() => {
+                  stream('preference_change', contextCat(), `You rated your credit "${c.label}"`);
+                  setAnswers((a) => ({ ...a, credit: c.v }));
+                }}
               >
                 {c.label}
               </button>
@@ -585,7 +620,11 @@ export function BankView(_props: { config: AppConfig | null }) {
             max={INCOME_RANGE.max}
             step={INCOME_RANGE.step}
             value={answers.income}
-            onChange={(e) => setAnswers((a) => ({ ...a, income: +e.target.value }))}
+            onChange={(e) => {
+              const v = +e.target.value;
+              setAnswers((a) => ({ ...a, income: v }));
+              later('om-income', 400, () => stream('preference_change', contextCat(), `You set annual income to ${money(v)}`));
+            }}
           />
       </div>
       <div className="q">
@@ -598,7 +637,11 @@ export function BankView(_props: { config: AppConfig | null }) {
             max={SPEND_RANGE.max}
             step={SPEND_RANGE.step}
             value={answers.spend}
-            onChange={(e) => setAnswers((a) => ({ ...a, spend: +e.target.value }))}
+            onChange={(e) => {
+              const v = +e.target.value;
+              setAnswers((a) => ({ ...a, spend: v }));
+              later('om-spend', 400, () => stream('preference_change', 'credit_card', `You set monthly card spend to ${money(v)}`));
+            }}
           />
       </div>
       <button className="btn dark cta" onClick={find}>
@@ -712,7 +755,10 @@ export function BankView(_props: { config: AppConfig | null }) {
         {!selectedGoal && (
           <div className="ftabs" style={{ marginTop: 20 }}>
             {([['all', 'All'], ...CATEGORIES.map((k) => [k, CAT[k].label])] as [string, string][]).map(([k, l]) => (
-              <button key={k} className={filter === k ? 'on' : ''} onClick={() => setFilter(k as 'all' | Category)}>
+              <button key={k} className={filter === k ? 'on' : ''} onClick={() => {
+                stream('search', k === 'all' ? contextCat() : (k as Category), k === 'all' ? 'You showed all offers' : `You filtered offers to ${l}`);
+                setFilter(k as 'all' | Category);
+              }}>
                 {l}
               </button>
             ))}
@@ -979,26 +1025,11 @@ export function BankView(_props: { config: AppConfig | null }) {
         </div>
       </div>
 
+      <StreamFeatures clicks={streamClicks} live={streamLive} labels={clickLabels.current} />
+
       <div className="trace">
-        <div className="th">DATABRICKS LAYER · your clicks -&gt; Kafka -&gt; streaming features</div>
-        {streamLive === false && <div className="err">Live pipelines off · Warm up on the Live stream tab to stream your clicks</div>}
-        {streamClicks.length ? (
-          streamClicks.slice(0, 4).map((c) => (
-            <div key={c.id} className={c.status === 'pending' ? 'new' : c.status === 'served' ? '' : 'err'}>
-              {new Date(c.sent_at).toTimeString().slice(0, 8)} {c.event_type.padEnd(14)} {CAT[c.category]?.label.padEnd(13)}{' '}
-              {c.status === 'served'
-                ? `clicks_10m ${c.before?.cust_clicks_10m ?? 0}->${c.after?.cust_clicks_10m ?? '—'} · cat_views_30d ${c.before?.cust_cat_views_30d ?? 0}->${c.after?.cust_cat_views_30d ?? '—'} · ${fmtMs(c.servable_ms)}`
-                : c.status === 'pending' ? 'in Kafka, waiting for Feature Serving…'
-                  : c.status === 'off' ? 'not streamed (pipelines off)'
-                    : c.status === 'missing' ? 'not servable after 15 s' : `failed: ${c.error ?? ''}`}
-            </div>
-          ))
-        ) : (
-          <div>{streamLive === false ? '' : 'Click around the site to stream your clicks.'}</div>
-        )}
-        <div className="th" style={{ marginTop: 8 }}>
-          live request trace
-        </div>
+        <div className="th">DATABRICKS LAYER · live request trace</div>
+
         {traceLines.length ? (
           traceLines.map((l, i) => (
             <div key={`${l.t}-${trace.length - i}`} className={l.err ? 'err' : i === 0 ? 'new' : ''}>

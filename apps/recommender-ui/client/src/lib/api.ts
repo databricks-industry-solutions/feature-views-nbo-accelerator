@@ -139,9 +139,18 @@ export interface StreamClick {
   category: Category;
   sent_at: number;
   status: 'pending' | 'served' | 'missing' | 'off' | 'error';
-  before?: { cust_clicks_10m?: number; cust_cat_views_30d?: number };
-  after?: { cust_clicks_10m?: number; cust_cat_views_30d?: number };
-  servable_ms?: number;
+  before?: { cust_clicks_10m?: number; cust_cat_views_30d?: number; cust_mobile_cat_views_10m?: number };
+  after?: { cust_clicks_10m?: number; cust_cat_views_30d?: number; cust_mobile_cat_views_10m?: number };
+  // ms after the click's event_time. kafka/total/serving: measured by the app. rtm/lakebase: the pipeline's own
+  // output_time and commit_time from the streaming online table.
+  kafka_ms?: number;
+  rtm_ms?: number;
+  lakebase_ms?: number;
+  total_ms?: number;
+  serving_ms?: number;
+  feature_ms?: { cust_clicks_10m?: number; cust_cat_views_30d?: number; cust_mobile_cat_views_10m?: number }; // returned by Feature Serving
+  lakebase_feature_ms?: { cust_clicks_10m?: number; cust_cat_views_30d?: number }; // written to Lakebase
+  pipeline_note?: string; // why the pipeline timestamps are missing
   error?: string;
 }
 
@@ -196,7 +205,7 @@ export const api = {
     call<ProfileResponse>('/api/profile', { customer_id, session_id: SESSION_ID }),
   click: (customer_id: string | null, event_type: EventType, category: Category) =>
     call<StreamClick>('/api/click', { customer_id, session_id: SESSION_ID, event_type, category }),
-  clicks: () => call<{ clicks: StreamClick[]; live: boolean }>(`/api/clicks?session_id=${encodeURIComponent(SESSION_ID)}`),
+  clicks: () => call<{ clicks: StreamClick[]; live: boolean; pipeline_times_error?: string | null }>(`/api/clicks?session_id=${encodeURIComponent(SESSION_ID)}`),
   traffic: () => call<TrafficState>('/api/traffic'),
   trafficStart: (eps: number, seconds: number) => call<TrafficState>('/api/traffic', { eps, seconds }),
   trafficStop: () => call<TrafficState>('/api/traffic', undefined, 'DELETE'),

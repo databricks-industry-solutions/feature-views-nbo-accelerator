@@ -1,6 +1,7 @@
 import { createApp, analytics, server } from '@databricks/appkit';
 import { metrics } from './realtime.js';
 import { sessionClicks, startClicks, trackClick } from './clicks.js';
+import { pipelineTimesError, startPipelineTimes, warmPipelineTimes, watchPipeline } from './pipelineTimes.js';
 import { cursorNow, lastRunSnapshot, lastVisitAt, latestFinished, pointsSince, probeFreshness, produceEvents, startStream, startTraffic, stats, stopTraffic, touch, trafficState, VISIT_WINDOW_MS } from './stream.js';
 import { pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp } from './pipelines.js';
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
@@ -47,6 +48,8 @@ const KAFKA_TOPIC = process.env.KAFKA_TOPIC ?? 'nbo-session-events';
 const FILES_PATH = (process.env.FILES_PATH ?? '').replace(/\/+$/, '');
 // Live stream page: the Feature Engineering Stream and the streaming features whose pipelines Warm up starts.
 const LIVE_STREAM = process.env.LIVE_STREAM ?? 'session_events_stream';
+// Lakebase compute of the online store, for the pipeline's own timestamps on the Lakeshore Bank tab.
+const LAKEBASE_ENDPOINT = process.env.LAKEBASE_ENDPOINT ?? '';
 const LIVE_FEATURES = (process.env.LIVE_FEATURES ?? 'cust_clicks_10m,cust_cat_views_10m,cust_mobile_cat_views_10m,cust_cat_views_30d')
   .split(',').map((f) => f.trim()).filter(Boolean);
 const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
@@ -586,7 +589,7 @@ createApp({
       });
       app.get('/api/clicks', (req, res) => {
         // live is false only when the pipelines are known to be off; null (not read yet) counts as on.
-        res.json({ clicks: sessionClicks(String(req.query.session_id ?? 'anon')), live: pipelinesRunning() !== false });
+        res.json({ clicks: sessionClicks(String(req.query.session_id ?? 'anon')), live: pipelinesRunning() !== false, pipeline_times_error: pipelineTimesError() });
       });
 
       app.post('/api/profile', async (req, res) => {
@@ -757,17 +760,25 @@ createApp({
       void warmServing().catch((e) => console.warn('[warmup] keep-warm call failed:', String(e).slice(0, 200)));
     }, KEEP_WARM_MS);
 
+    // Workspace REST calls as the app service principal.
+    const spApi = async <T,>(method: string, path: string, body?: unknown) => {
+      const r = await fetch(`${HOST}${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${await getToken()}`, 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(`${method} ${path.split('?')[0]} ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      const text = await r.text();
+      return (text ? JSON.parse(text) : {}) as T;
+    };
+    if (LAKEBASE_ENDPOINT) {
+      startPipelineTimes({ api: spApi, endpoint: LAKEBASE_ENDPOINT, catalog: CATALOG, schema: SCHEMA });
+      void warmPipelineTimes();
+      // Keep one Lakebase connection open while people use the app; with nobody visiting, let it close.
+      setInterval(() => { if (Date.now() - lastVisitAt() < VISIT_WINDOW_MS) void warmPipelineTimes(); }, 30_000);
+    }
     startPipelines({
-      api: async <T,>(method: string, path: string, body?: unknown) => {
-        const r = await fetch(`${HOST}${path}`, {
-          method,
-          headers: { Authorization: `Bearer ${await getToken()}`, 'Content-Type': 'application/json' },
-          body: body === undefined ? undefined : JSON.stringify(body),
-        });
-        if (!r.ok) throw new Error(`${method} ${path.split('?')[0]} ${r.status}: ${(await r.text()).slice(0, 200)}`);
-        const text = await r.text();
-        return (text ? JSON.parse(text) : {}) as T;
-      },
+      api: spApi,
       stream:`${CATALOG}.${SCHEMA}.${LIVE_STREAM}`,
       features: LIVE_FEATURES.map((f) => `${CATALOG}.${SCHEMA}.${f}`),
       probe: () => probeFreshness(),
@@ -777,13 +788,18 @@ createApp({
     // Traffic only flows after Start live traffic.
     startClicks({
       produce: produceEvents,
-      read: async (customerId, category) => {
-        const { json, readAt } = await queryEndpoint(FEATURE_ENDPOINT, [{ customer_id: customerId, product_category: category }]);
-        const row = ((Array.isArray(json.outputs) ? json.outputs : Array.isArray(json.predictions) ? json.predictions : [])[0] ?? {}) as Record<string, unknown>;
+      // One endpoint lookup per click (never cached across clicks), then data-plane reads only.
+      reader: async () => {
+        const ep = await resolveFeatureEndpoint();
         const num = (v: unknown) => (v === null || v === undefined || Number.isNaN(Number(v)) ? undefined : Number(v));
-        return { values: { cust_clicks_10m: num(row.cust_clicks_10m), cust_cat_views_30d: num(row.cust_cat_views_30d) }, readAt };
+        return async (customerId, category) => {
+          const { json, latencyMs } = await queryEndpoint(FEATURE_ENDPOINT, [{ customer_id: customerId, product_category: category }], ep);
+          const row = ((Array.isArray(json.outputs) ? json.outputs : Array.isArray(json.predictions) ? json.predictions : [])[0] ?? {}) as Record<string, unknown>;
+          return { values: { cust_clicks_10m: num(row.cust_clicks_10m), cust_cat_views_30d: num(row.cust_cat_views_30d), cust_mobile_cat_views_10m: num(row.cust_mobile_cat_views_10m) }, latencyMs };
+        };
       },
       live: () => pipelinesRunning() !== false,
+      pipeline: watchPipeline,
     });
 
     startStream({

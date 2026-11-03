@@ -90,6 +90,7 @@ Part 2 depends on Part 1. The included end-to-end job runs them in the correct o
 - Permissions to create Lakebase online stores, serving endpoints, and Databricks Apps
 - A SQL warehouse, and a service principal whose client ID and secret are stored in a secret scope of your choice
 - (For Part 2) A Kafka cluster, plus a Unity Catalog Kafka connection and service credential. The included code uses Amazon MSK with IAM auth.
+- (For the Lakeshore Bank tab's pipeline timestamps) A Postgres role for the app's service principal in the online store's Lakebase project, `CAN_USE` on that project, and `SELECT` on the online tables. Without them, the tab shows the times measured by the app only.
 
 Batch and streaming features must use the **same catalog, schema, and online store**. The default
 deployment creates a per-user schema to avoid collisions in shared workspaces.

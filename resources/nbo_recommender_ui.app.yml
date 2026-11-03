@@ -22,6 +22,10 @@ resources:
           - { name: KAFKA_TOPIC, value: '${var.kafka_topic}' }
           # How it works links each code excerpt to the file this bundle deployed.
           - { name: FILES_PATH, value: '${workspace.file_path}' }
+          # Lakebase compute of the online store: the Lakeshore Bank tab reads each click's pipeline timestamps
+          # (output_time, commit_time) from the streaming online tables. The app service principal needs a
+          # Postgres role with SELECT on them (README, Prerequisites).
+          - { name: LAKEBASE_ENDPOINT, value: 'projects/${var.online_store_name}/branches/production/endpoints/primary' }
           - { name: QUERY_SP_CLIENT_ID, value_from: query-sp-client-id }
           - { name: QUERY_SP_CLIENT_SECRET, value_from: query-sp-client-secret }
       user_api_scopes:

@@ -32,7 +32,8 @@
   "description": "Real-time next-best-offer Databricks App",
   "dependencies": {
     "@databricks/appkit": "0.38.1",
-    "@databricks/sdk-experimental": "0.17.0"
+    "@databricks/sdk-experimental": "0.17.0",
+    "@databricks/lakebase": "0.3.0"
   },
   "devDependencies": {
     "@databricks/appkit-ui": "0.38.1",
