@@ -217,7 +217,9 @@ print(f"Route-optimized endpoint '{ENDPOINT}' deploying {MODEL} v{newest.version
 
 # Endpoint deploy is async — block until READY so the feature-freshness benchmark doesn't hit a cold endpoint.
 w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
-print(f"{ENDPOINT} is READY.")
+ep = w.serving_endpoints.get(ENDPOINT)
+assert ep.route_optimized, f"{ENDPOINT} was created WITHOUT route optimization: delete and recreate"
+print(f"{ENDPOINT} is READY and route-optimized.")
 
 # COMMAND ----------
 # MAGIC %md ## Grant the benchmark service principal CAN_QUERY (route-optimized query path)

@@ -274,7 +274,9 @@ else:
 # so the downstream latency feature-serving benchmark doesn't query a not-ready / cold endpoint.
 print(f"Waiting for {ENDPOINT} to become READY...")
 w.serving_endpoints.wait_get_serving_endpoint_not_updating(name=ENDPOINT)
-print(f"{ENDPOINT} is READY.")
+ep = w.serving_endpoints.get(ENDPOINT)
+assert ep.route_optimized, f"{ENDPOINT} was created WITHOUT route optimization: delete and recreate"
+print(f"{ENDPOINT} is READY and route-optimized.")
 
 # COMMAND ----------
 # MAGIC %md ## Grant the benchmark service principal CAN_QUERY (route-optimized query path)
