@@ -10,6 +10,10 @@ export interface PipelineDeps {
   stream: string; // catalog.schema.stream_name
   features: string[]; // full names of the streaming features
   probe?: () => Promise<number>; // ms for one test event to become servable end to end
+  // Warm up runs this before it starts any pipeline: the Real-Time Mode pipelines write to the online store, so
+  // it has to be up first. Turn off runs whenStopped once every pipeline has stopped.
+  prepare?: () => Promise<void>;
+  whenStopped?: () => Promise<void>;
 }
 
 export type Phase = 'checking' | 'off' | 'starting' | 'ready' | 'stopping' | 'unknown';
@@ -29,6 +33,11 @@ const RESOLVE_MS = 5 * 60_000;
 const PROBE_OK_MS = 1_000;
 const PROBES_NEEDED = 3;
 const STARTING = new Set(['STARTING', 'DEPLOYING', 'RECOVERING', 'RESETTING']);
+const ACTIVE = new Set(['RUNNING', 'STOPPING', ...STARTING]);
+// Feature Engineering restarts a stopped ingestion pipeline every 2 hours. With every Real-Time Mode pipeline off,
+// the watchdog stops it again; a Warm up in the last WARM_GRACE_MS is left alone.
+const WATCH_MS = 60_000;
+const WARM_GRACE_MS = 10 * 60_000;
 // A stopped pipeline can still report state RUNNING while its update is stopping.
 const STOPPING_UPDATE = new Set(['STOPPING', 'CANCELING']);
 
@@ -46,6 +55,10 @@ let probing = false;
 let probeOk = 0;
 let probeMs: number | null = null;
 let queued = false;
+let preparing = false; // Warm up is waiting on prepare() before it starts the pipelines
+let cancelWarm = false; // Turn off was pressed while Warm up was still preparing
+let pauseWhenStopped = false; // Turn off was pressed; run whenStopped once every pipeline is down
+let watchTimer: NodeJS.Timeout | null = null;
 
 // One test event per call, run while someone is watching the status (the Live stream page polls it).
 function kickProbe(d: PipelineDeps) {
@@ -112,7 +125,7 @@ export function phaseOf(list: Pipe[], requestedRecently: boolean): Phase {
 export function pipelineStatus(): PipelineStatus {
   if (Date.now() - refreshedAt > REFRESH_MS) void refresh();
   const now = Date.now();
-  let phase: Phase = !loaded ? (readError ? 'unknown' : 'checking') : phaseOf(pipes, now - requestedAt < 30_000);
+  let phase: Phase = !loaded ? (readError ? 'unknown' : 'checking') : phaseOf(pipes, preparing || now - requestedAt < 30_000);
   if (queued && phase !== 'stopping' && Date.now() - refreshedAt < REFRESH_MS) {
     queued = false;
     warmUp().catch((e) => { actionError = String(e).slice(0, 300); });
@@ -145,9 +158,21 @@ export function pipelinesRunning(): boolean | null {
   return loaded ? phaseOf(pipes, false) === 'ready' : null;
 }
 
-/** Warm up: start every live pipeline that is not already running. */
+async function startStopped(d: PipelineDeps) {
+  const results = await Promise.allSettled(pipes.filter((p) => p.state !== 'RUNNING' && !STARTING.has(p.state))
+    .map((p) => d.api('POST', `/api/2.0/pipelines/${p.id}/updates`, {}).catch((e) => { throw new Error(`${p.label}: ${String(e)}`); })));
+  const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed.length) actionError = failed.map((r) => String(r.reason).slice(0, 200)).join('; ');
+  requestedAt = Date.now();
+  refreshedAt = 0;
+  await refresh();
+}
+
+/** Warm up: run prepare (wake the online store), then start every live pipeline that is not already running.
+ *  Returns once the request is under way; prepare can take a minute, and the status reports it as starting. */
 export async function warmUp(): Promise<PipelineStatus> {
   actionError = null;
+  pauseWhenStopped = false;
   refreshedAt = 0;
   await refresh();
   if (readError) throw new Error(readError);
@@ -157,17 +182,23 @@ export async function warmUp(): Promise<PipelineStatus> {
     return pipelineStatus();
   }
   const d = deps!;
-  const results = await Promise.allSettled(pipes.filter((p) => p.state !== 'RUNNING' && !STARTING.has(p.state))
-    .map((p) => d.api('POST', `/api/2.0/pipelines/${p.id}/updates`, {}).catch((e) => { throw new Error(`${p.label}: ${String(e)}`); })));
-  const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-  if (failed.length) actionError = failed.map((r) => String(r.reason).slice(0, 200)).join('; ');
-  requestedAt = Date.now();
-  refreshedAt = 0;
-  await refresh();
+  if (!d.prepare) {
+    await startStopped(d);
+    return pipelineStatus();
+  }
+  cancelWarm = false;
+  if (!preparing) {
+    preparing = true;
+    requestedAt = Date.now();
+    void d.prepare()
+      .then(() => (cancelWarm ? undefined : startStopped(d)))
+      .catch((e) => { actionError = String(e).slice(0, 300); })
+      .finally(() => { preparing = false; });
+  }
   return pipelineStatus();
 }
 
-/** Turn off: stop every live pipeline that is running or starting. */
+/** Turn off: stop every live pipeline that is running or starting, then run whenStopped once they are all down. */
 export async function turnOff(): Promise<PipelineStatus> {
   actionError = null;
   refreshedAt = 0;
@@ -178,11 +209,44 @@ export async function turnOff(): Promise<PipelineStatus> {
     .map((p) => d.api('POST', `/api/2.0/pipelines/${p.id}/stop`)));
   requestedAt = 0;
   queued = false;
+  cancelWarm = preparing; // a Warm up still preparing does not start the pipelines afterwards
+  pauseWhenStopped = !!d.whenStopped;
   refreshedAt = 0;
   await refresh();
+  await afterStop(d);
   return pipelineStatus();
 }
 
-export function startPipelines(d: PipelineDeps) {
+async function afterStop(d: PipelineDeps) {
+  if (!pauseWhenStopped || !loaded || preparing || queued || pipes.some((p) => ACTIVE.has(p.state))) return;
+  pauseWhenStopped = false;
+  await d.whenStopped?.().catch((e) => { actionError = String(e).slice(0, 300); });
+}
+
+/** One watchdog pass: finish a pending Turn off, and stop ingestion that runs with no Real-Time Mode pipeline. */
+export async function watch(): Promise<void> {
+  const d = deps;
+  if (!d) return;
+  refreshedAt = 0;
+  await refresh();
+  if (readError || !loaded) return;
+  await afterStop(d);
+  const rtmActive = pipes.some((p) => p.role === 'rtm' && ACTIVE.has(p.state));
+  if (rtmActive || preparing || queued || Date.now() - requestedAt < WARM_GRACE_MS) return;
+  const idleIngest = pipes.filter((p) => p.role === 'ingestion' && (p.state === 'RUNNING' || STARTING.has(p.state)));
+  for (const p of idleIngest) {
+    console.log(`[watchdog] stopping ${p.label} (${p.id}): no Real-Time Mode pipeline is running`);
+    await d.api('POST', `/api/2.0/pipelines/${p.id}/stop`).catch((e) => console.warn('[watchdog] stop failed:', String(e).slice(0, 200)));
+  }
+  if (idleIngest.length) {
+    refreshedAt = 0;
+    await refresh();
+  }
+}
+
+export function startPipelines(d: PipelineDeps, watchMs = WATCH_MS) {
   deps = d;
+  if (watchTimer) clearInterval(watchTimer);
+  watchTimer = watchMs > 0 ? setInterval(() => void watch(), watchMs) : null;
+  watchTimer?.unref();
 }

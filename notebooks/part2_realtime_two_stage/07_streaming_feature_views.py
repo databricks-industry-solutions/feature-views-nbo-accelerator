@@ -270,12 +270,16 @@ while True:
     time.sleep(POLL_S)
 
 # COMMAND ----------
-# MAGIC %md ## 5 · Let the app start and stop the live pipelines
-# MAGIC The app's **Warm up** and **Turn off pipelines** buttons start and stop the ingestion pipeline and the
-# MAGIC Real-Time Mode pipelines as the app's service principal, which needs `CAN_RUN` on each. Re-run this
-# MAGIC cell after re-materializing a feature: the new materialization gets a new pipeline.
+# MAGIC %md ## 5 · Let the app start and stop the live demo
+# MAGIC The app's **Warm up** and **Turn off pipelines** buttons run as the app's service principal. Turn off stops
+# MAGIC the pipelines, pauses the Lakebase compute and the batch job schedule; Warm up wakes Lakebase, runs the
+# MAGIC batch materialization job first if it has not succeeded in the last 24 hours, then starts the pipelines.
+# MAGIC The service principal needs `CAN_RUN` on each live pipeline, `CAN_MANAGE` on the batch materialization
+# MAGIC job, and `CAN_MANAGE` on the online store's Lakebase project. Re-run this cell after re-materializing a
+# MAGIC feature: the new materialization gets a new pipeline and job.
 # COMMAND ----------
 from databricks.sdk.service.pipelines import PipelineAccessControlRequest, PipelinePermissionLevel
+from databricks.sdk.service.jobs import JobAccessControlRequest, JobPermissionLevel
 
 app_name = dbutils.widgets.get("app_name").strip()
 app_sp = None
@@ -291,10 +295,22 @@ if app_sp:
                             query={"feature_name": f"{catalog}.{schema}.{name}"})
         live_pipelines |= {m["pipeline_id"] for m in r.get("materialized_features", [])
                            if m.get("streaming_mode") and m.get("pipeline_id")}
+    batch_jobs = set()
+    for name in ["cust_clicks_10m", "cust_cat_views_10m", "cust_mobile_cat_views_10m", "cust_cat_views_30d"]:
+        r = w.api_client.do("GET", "/api/2.0/feature-engineering/materialized-features",
+                            query={"feature_name": f"{catalog}.{schema}.{name}"})
+        batch_jobs |= {m["job_id"] for m in r.get("materialized_features", [])
+                       if not m.get("streaming_mode") and m.get("cron_schedule_trigger") and m.get("job_id")}
     for p in sorted(live_pipelines):
         w.pipelines.update_permissions(pipeline_id=p, access_control_list=[PipelineAccessControlRequest(
             service_principal_name=app_sp, permission_level=PipelinePermissionLevel.CAN_RUN)])
-    print(f"Granted CAN_RUN on {len(live_pipelines)} live pipelines to the {app_name} service principal.")
+    for j in sorted(batch_jobs):
+        w.jobs.update_permissions(job_id=str(j), access_control_list=[JobAccessControlRequest(
+            service_principal_name=app_sp, permission_level=JobPermissionLevel.CAN_MANAGE)])
+    w.api_client.do("PATCH", f"/api/2.0/permissions/database-projects/{osn}", body={"access_control_list": [
+        {"service_principal_name": app_sp, "permission_level": "CAN_MANAGE"}]})
+    print(f"Granted the {app_name} service principal CAN_RUN on {len(live_pipelines)} live pipelines, "
+          f"CAN_MANAGE on {len(batch_jobs)} batch materialization job(s), and CAN_MANAGE on Lakebase project {osn}.")
 
 # COMMAND ----------
 # MAGIC %md

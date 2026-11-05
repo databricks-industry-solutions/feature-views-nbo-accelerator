@@ -1,9 +1,10 @@
 import { createApp, analytics, server } from '@databricks/appkit';
 import { metrics } from './realtime.js';
 import { sessionClicks, startClicks, trackClick } from './clicks.js';
-import { freshnessRows, pipelineTimesError, startPipelineTimes, warmPipelineTimes, watchPipeline } from './pipelineTimes.js';
+import { freshnessRows, pingLakebase, pipelineTimesError, startPipelineTimes, warmPipelineTimes, watchPipeline } from './pipelineTimes.js';
 import { cursorNow, freshPointsSince, lastRunSnapshot, lastVisitAt, latestFinished, pointsSince, probeFreshness, produceEvents, startStream, startTraffic, stats, stopTraffic, touch, trafficState, VISIT_WINDOW_MS } from './stream.js';
 import { pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp } from './pipelines.js';
+import { catchUpBatch, holdPaused, isPaused, pause, powerReady, powerStatus, resume, startPower } from './power.js';
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,7 @@ const FILES_PATH = (process.env.FILES_PATH ?? '').replace(/\/+$/, '');
 const LIVE_STREAM = process.env.LIVE_STREAM ?? 'session_events_stream';
 // Lakebase compute of the online store, for the pipeline's own timestamps on the Lakeshore Bank tab.
 const LAKEBASE_ENDPOINT = process.env.LAKEBASE_ENDPOINT ?? '';
+const PAUSED_ERROR = 'The demo is paused. Press Warm up pipelines on the Live stream tab, then try again.';
 const LIVE_FEATURES = (process.env.LIVE_FEATURES ?? 'cust_clicks_10m,cust_cat_views_10m,cust_mobile_cat_views_10m,cust_cat_views_30d')
   .split(',').map((f) => f.trim()).filter(Boolean);
 const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
@@ -488,6 +490,17 @@ function warmServing(): Promise<void> {
   }).finally(() => { warming = null; });
   return warming;
 }
+// After Lakebase wakes, the endpoints' first lookups can still hit closed connections; retry the warm call.
+async function warmServingRetry(tries = 4) {
+  for (let i = 1; ; i += 1) {
+    try {
+      return await warmServing();
+    } catch (e) {
+      if (i >= tries) throw e;
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+  }
+}
 async function ensureServingWarm() {
   if (servingWarm.status === 'READY' && servingWarm.at && Date.now() - servingWarm.at < KEEP_WARM_MS) return;
   // A failed warm call should not fail the visitor's request; the request itself reports any real error.
@@ -503,7 +516,8 @@ createApp({
         const quiet = Date.now() - lastVisitAt() > VISIT_WINDOW_MS;
         touch();
         // Wake the endpoints on the page load itself, so the visitor's first recommendation does not wait for it.
-        if (quiet) void warmServing().catch(() => undefined);
+        // Not while paused: then only Warm up wakes them.
+        if (quiet && !isPaused()) void warmServing().catch(() => undefined);
         next();
       });
       // Lightweight config for the UI header (catalog/schema the app is pointed at).
@@ -560,6 +574,10 @@ createApp({
       // stored and streaming features are looked up online by the endpoint. latency_ms is measured.
       app.post('/api/recommend', async (req, res) => {
         const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string; ctx?: Ctx };
+        if (isPaused()) {
+          res.status(409).json({ error: PAUSED_ERROR, paused: true });
+          return;
+        }
         try {
           await ensureServingWarm();
           const sqlToken = req.header('x-forwarded-access-token') ?? (await getToken());
@@ -594,6 +612,10 @@ createApp({
 
       app.post('/api/profile', async (req, res) => {
         const b = (req.body ?? {}) as { customer_id?: string | null; session_id?: string };
+        if (isPaused()) {
+          res.status(409).json({ error: PAUSED_ERROR, paused: true });
+          return;
+        }
         try {
           await ensureServingWarm();
           const { customer, categories, latencyMs } = await lookupProfile(visitorId(b.customer_id, b.session_id));
@@ -620,12 +642,14 @@ createApp({
           last_run: trafficState().running && !trafficState().warming_up ? null : lastRunSnapshot(),
           pipelines: pipelineStatus(),
           serving: { status: servingWarm.status, at: servingWarm.at, error: servingWarm.error },
+          power: powerStatus(),
         });
       });
-      // Warm up / turn off the live pipelines (ingestion + Real-Time Mode), started by the app service principal.
-      // Warm up also wakes both serving endpoints, which may have scaled to zero while nobody visited.
+      // Warm up / turn off the live demo, as the app service principal. Warm up wakes Lakebase, then starts the
+      // pipelines (ingestion + Real-Time Mode) and warms both serving endpoints. Turn off stops the pipelines and
+      // the warm calls, and pauses Lakebase once the pipelines are down (power.ts).
       app.post('/api/pipelines', async (_req, res) => {
-        void warmServing().catch(() => undefined);
+        if (!LAKEBASE_ENDPOINT) void warmServing().catch(() => undefined);
         try {
           res.json(await warmUp());
         } catch (e) {
@@ -634,6 +658,7 @@ createApp({
       });
       app.delete('/api/pipelines', async (_req, res) => {
         stopTraffic(); // traffic has nothing to measure once the pipelines stop
+        holdPaused();
         try {
           res.json(await turnOff());
         } catch (e) {
@@ -647,7 +672,7 @@ createApp({
         const b = (req.body ?? {}) as { eps?: number; seconds?: number };
         const phase = pipelineStatus().phase;
         if (phase === 'off' || phase === 'stopping') {
-          res.status(409).json({ error: 'The live pipelines are off. Press Warm up first. Warming up takes about 2 minutes.' });
+          res.status(409).json({ error: 'The live pipelines are off. Press Warm up first. Warming up takes about 3 minutes.' });
           return;
         }
         try {
@@ -736,6 +761,11 @@ createApp({
     // Warm both endpoint clients on boot without adding these requests to the explicit latency test.
     // Run asynchronously so the app can start accepting requests immediately.
     void (async () => {
+      if (LAKEBASE_ENDPOINT) await powerReady();
+      if (isPaused()) {
+        console.log('[warmup] demo paused (Lakebase disabled): endpoints stay cold until Warm up');
+        return;
+      }
       try {
         const token = await getToken();
         const customers = await queryRows(
@@ -756,7 +786,7 @@ createApp({
       await warmServing().catch((e) => console.warn('[warmup] keep-warm call failed:', String(e).slice(0, 200)));
     })();
     setInterval(() => {
-      if (Date.now() - lastVisitAt() > VISIT_WINDOW_MS) return;
+      if (isPaused() || Date.now() - lastVisitAt() > VISIT_WINDOW_MS) return;
       void warmServing().catch((e) => console.warn('[warmup] keep-warm call failed:', String(e).slice(0, 200)));
     }, KEEP_WARM_MS);
 
@@ -773,15 +803,26 @@ createApp({
     };
     if (LAKEBASE_ENDPOINT) {
       startPipelineTimes({ api: spApi, endpoint: LAKEBASE_ENDPOINT, catalog: CATALOG, schema: SCHEMA });
-      void warmPipelineTimes();
-      // Keep one Lakebase connection open while people use the app; with nobody visiting, let it close.
-      setInterval(() => { if (Date.now() - lastVisitAt() < VISIT_WINDOW_MS) void warmPipelineTimes(); }, 30_000);
+      void startPower({ api: spApi, endpoint: LAKEBASE_ENDPOINT, wake: pingLakebase, features: LIVE_FEATURES.map((f) => `${CATALOG}.${SCHEMA}.${f}`) })
+        .then(() => { if (!isPaused()) void warmPipelineTimes(); });
+      // Keep one Lakebase connection open while people use the app; with nobody visiting, or paused, let it close.
+      setInterval(() => { if (!isPaused() && Date.now() - lastVisitAt() < VISIT_WINDOW_MS) void warmPipelineTimes(); }, 30_000);
     }
     startPipelines({
       api: spApi,
       stream:`${CATALOG}.${SCHEMA}.${LIVE_STREAM}`,
       features: LIVE_FEATURES.map((f) => `${CATALOG}.${SCHEMA}.${f}`),
       probe: () => probeFreshness(),
+      ...(LAKEBASE_ENDPOINT ? {
+        prepare: async () => {
+          await resume();
+          // The scheduled batch run fails while paused; run it now if it is over a day old. A failure here is
+          // reported on the page, and the pipelines start anyway.
+          await catchUpBatch().catch((e) => console.warn('[warmup] batch catch-up failed:', String(e).slice(0, 200)));
+          void warmServingRetry().catch((e) => console.warn('[warmup] endpoints did not warm:', String(e).slice(0, 200)));
+        },
+        whenStopped: pause,
+      } : {}),
     });
 
     // Live traffic: the app produces to Kafka and tracks each event until Feature Serving returns it.
@@ -831,6 +872,7 @@ createApp({
       },
       customers: getSampleCustomers,
       freshness: LAKEBASE_ENDPOINT ? freshnessRows : undefined,
+      paused: isPaused,
     });
   },
 }).catch(console.error);

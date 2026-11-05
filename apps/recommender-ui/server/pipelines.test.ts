@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { phaseOf, pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp, type Pipe } from './pipelines';
+import { phaseOf, pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp, watch, type Pipe } from './pipelines';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pipe = (id: string, role: Pipe['role'], state: string, update: string | null = null): Pipe => ({ id, label: id, role, state, update });
@@ -10,7 +10,7 @@ function workspace() {
     ing: { state: 'IDLE', update: 'CANCELED' }, rtm1: { state: 'IDLE', update: 'CANCELED' }, rtm2: { state: 'RUNNING', update: 'RUNNING' },
   };
   const calls: string[] = [];
-  const api = async <T,>(method: string, path: string): Promise<T> => {
+  const api = async <T,>(method: string, path: string, _body?: unknown): Promise<T> => {
     if (method !== 'GET') calls.push(`${method} ${path}`);
     if (path.startsWith('/api/2.0/feature-engineering/streams/')) return { ingestion_config: { ingestion_pipeline_id: 'ing' } } as T;
     if (path.includes('materialized-features')) {
@@ -89,6 +89,75 @@ describe('live pipelines', () => {
     expect(pipelineStatus().queued).toBe(false);
     await turnOff();
   }, 10_000);
+
+  it('wakes the online store before starting, and pauses it once every pipeline is down', async () => {
+    await turnOff();
+    const ws = workspace();
+    const order: string[] = [];
+    startPipelines({
+      api: async <T,>(m: string, p: string, b?: unknown) => { if (m !== 'GET') order.push(p.split('/').pop()!); return ws.api<T>(m, p, b); },
+      stream: 'c.s.stream', features: ['c.s.f1', 'c.s.f2'],
+      prepare: async () => { order.push('prepare'); await sleep(50); },
+      whenStopped: async () => { order.push('whenStopped'); },
+    }, 0);
+    const st = await warmUp();
+    expect(st.phase).toBe('starting'); // still waking the store
+    expect(ws.calls).toEqual([]);
+    await sleep(120);
+    expect(order[0]).toBe('prepare');
+    expect(order.slice(1).sort()).toEqual(['updates', 'updates']); // ing + rtm1, only after prepare
+    await turnOff();
+    expect(order[order.length - 1]).toBe('whenStopped');
+  });
+
+  it('Turn off during a slow prepare keeps the pipelines from starting afterwards', async () => {
+    await turnOff();
+    const ws = workspace();
+    Object.assign(ws.state.rtm2, { state: 'IDLE', update: 'CANCELED' });
+    let stopped = false;
+    startPipelines({
+      api: ws.api, stream: 'c.s.stream', features: ['c.s.f1', 'c.s.f2'],
+      prepare: async () => { await sleep(100); }, // e.g. the batch job catching up
+      whenStopped: async () => { stopped = true; },
+    }, 0);
+    await warmUp();
+    await turnOff();
+    await sleep(150);
+    expect(ws.calls.filter((c) => c.endsWith('/updates'))).toEqual([]);
+    await watch(); // the next pass finishes the pending Turn off
+    expect(stopped).toBe(true);
+  });
+
+  it('watchdog stops ingestion that runs with no Real-Time Mode pipeline', async () => {
+    await turnOff();
+    const ws = workspace();
+    Object.assign(ws.state.rtm2, { state: 'IDLE', update: 'CANCELED' });
+    startPipelines({ api: ws.api, stream: 'c.s.stream', features: ['c.s.f1', 'c.s.f2'] }, 0);
+    Object.assign(ws.state.ing, { state: 'RUNNING', update: 'RUNNING' }); // Feature Engineering restarted it
+    await watch();
+    expect(ws.calls).toEqual(['POST /api/2.0/pipelines/ing/stop']);
+    expect(ws.state.ing.state).toBe('IDLE');
+
+    // With a Real-Time Mode pipeline up, ingestion is needed and stays on.
+    Object.assign(ws.state.ing, { state: 'RUNNING', update: 'RUNNING' });
+    Object.assign(ws.state.rtm1, { state: 'RUNNING', update: 'RUNNING' });
+    await watch();
+    expect(ws.calls).toHaveLength(1);
+    await turnOff();
+  });
+
+  it('watchdog leaves a fresh Warm up alone', async () => {
+    await turnOff();
+    const ws = workspace();
+    startPipelines({ api: ws.api, stream: 'c.s.stream', features: ['c.s.f1', 'c.s.f2'] }, 0);
+    await warmUp();
+    Object.assign(ws.state.rtm1, { state: 'IDLE', update: 'CANCELED' });
+    Object.assign(ws.state.rtm2, { state: 'IDLE', update: 'CANCELED' });
+    ws.calls.length = 0;
+    await watch();
+    expect(ws.calls).toEqual([]); // within the grace period after Warm up
+    await turnOff();
+  });
 
   it('reports running pipelines to the Bank tab without waiting for the probe', async () => {
     await turnOff();

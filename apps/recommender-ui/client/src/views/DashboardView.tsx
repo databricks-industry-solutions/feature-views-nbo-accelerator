@@ -142,8 +142,11 @@ export function DashboardView() {
   const pipes = live?.pipelines;
   // Warm up covers the serving endpoints too; a failed endpoint warm call does not block Start.
   const servingWarming = live?.serving.status === 'WARMING';
+  const power = live?.power;
+  const pausingLakebase = power?.step === 'Pausing Lakebase';
+  const powerStep = pausingLakebase ? null : power?.step ?? null; // Warm up's Lakebase and batch job steps
   const pipePhase = pipes?.phase ?? 'checking';
-  const phase = pipePhase === 'ready' && servingWarming ? 'starting' : pipePhase;
+  const phase = pausingLakebase ? 'stopping' : pipePhase === 'ready' && servingWarming ? 'starting' : pipePhase;
   const rtm = pipes?.pipes.filter((p) => p.role === 'rtm') ?? [];
   const rtmUp = rtm.filter((p) => p.state === 'RUNNING' && p.update === 'RUNNING').length;
   // 'unknown' means the app could not read the pipelines; Start stays usable then, the server reports any real error.
@@ -152,19 +155,25 @@ export function DashboardView() {
   const warmSecs = warmClickedAt && Date.now() - warmClickedAt < 600_000 ? Math.round((Date.now() - warmClickedAt) / 1000) : null;
   const pipeNote = {
     checking: 'Checking the live pipelines…',
-    off: 'Step 1: warm up the live pipelines. Warming up takes about 2 minutes. They stay off between demos to save cost.',
+    off: power?.paused
+      ? 'Paused: the live pipelines, Lakebase and the serving endpoints are off to save cost. Step 1: warm up. Warming up takes about 3 minutes, or about 10 when the daily batch job has to catch up first.'
+      : 'Step 1: warm up the live pipelines. Warming up takes about 3 minutes. They stay off between demos to save cost.',
     starting: pipes?.queued
       ? 'Waiting for the pipelines to finish shutting down, then warming up. This adds a few minutes.'
+      : powerStep
+      ? `${powerStep}, then starting the pipelines and warming the serving endpoints${warmSecs !== null ? ` · ${warmSecs}s` : ''}`
       : rtm.length && rtmUp === rtm.length && !servingWarming
       ? `Pipelines running, waiting until test events come through in under 1 s${pipes?.probe_ms != null ? ` · last one ${(pipes.probe_ms / 1000).toFixed(1)} s` : ''}${warmSecs !== null ? ` · ${warmSecs}s` : ''}`
-      : `Warming up takes about 2 minutes · starting Kafka ingestion, ${rtm.length || 4} Real-Time Mode pipelines and the serving endpoints · ${rtmUp}/${rtm.length || 4} pipelines running · endpoints ${servingWarming ? 'warming' : 'warm'}${warmSecs !== null ? ` · ${warmSecs}s` : ''}`,
-    stopping: 'Shutting down takes about 5 minutes. Press Warm up to start the pipelines again as soon as they stop.',
+      : `Warming up takes about 3 minutes · starting Kafka ingestion, ${rtm.length || 4} Real-Time Mode pipelines and the serving endpoints · ${rtmUp}/${rtm.length || 4} pipelines running · endpoints ${servingWarming ? 'warming' : 'warm'}${warmSecs !== null ? ` · ${warmSecs}s` : ''}`,
+    stopping: pausingLakebase
+      ? 'Pipelines stopped. Pausing Lakebase; the serving endpoints scale to zero on their own.'
+      : 'Shutting down takes about 5 minutes: the pipelines stop, then Lakebase pauses and the serving endpoints scale to zero. Press Warm up to start again as soon as they stop.',
     ready: trafficOn
       ? 'Live pipelines running'
       : 'Step 2: start live traffic. The pipelines stay on until you press Turn off pipelines.',
     unknown: 'Could not read the live pipelines',
   }[phase];
-  const pipeError = pipes?.failed.length ? `Failed to start: ${pipes.failed.join(', ')}. Press Warm up to retry.` : pipes?.error;
+  const pipeError = pipes?.failed.length ? `Failed to start: ${pipes.failed.join(', ')}. Press Warm up to retry.` : pipes?.error ?? power?.error;
 
   return (
     <div className="nbo-live mx-auto w-full max-w-6xl px-6 py-7">
@@ -192,7 +201,7 @@ export function DashboardView() {
             <button
               onClick={() => pipeAction(true)}
               disabled={pipeBusy || !live || phase === 'starting' || phase === 'checking'}
-              title="Warming up takes about 2 minutes"
+              title="Warming up takes about 3 minutes"
               className="flex items-center gap-2 rounded-xl px-4 py-2 text-[13px] font-semibold shadow-sm disabled:opacity-60"
               style={{ background: 'var(--bank-glow)', color: 'var(--bank-navy)' }}
             >

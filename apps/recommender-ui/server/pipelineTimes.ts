@@ -54,6 +54,23 @@ const ident = (s: string) => `"${s.replace(/"/g, '""')}"`;
 
 const WATCH_EVERY_MS = 3;
 
+/** One query on a fresh pool, throwing on failure: Warm up uses it to know Lakebase accepts connections again.
+ *  The old pool is dropped first, since its connections died when the compute was disabled. */
+export async function pingLakebase(): Promise<void> {
+  const d = deps;
+  if (!d) return;
+  const old = pool;
+  pool = null;
+  void old?.then((p) => p.end()).catch(() => undefined);
+  try {
+    await (await getPool(d)).query('SELECT 1');
+    lastError = null;
+  } catch (e) {
+    pool = null;
+    throw e;
+  }
+}
+
 /** Open the Lakebase connection and resolve the online tables ahead of the first click: opening it (endpoint
  *  lookup, token, TLS) takes longer than a click's watch, so a cold first click would miss its row. Called at
  *  startup and every 30 s while someone is using the app. */

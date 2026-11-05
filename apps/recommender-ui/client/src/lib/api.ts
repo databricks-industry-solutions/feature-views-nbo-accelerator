@@ -123,6 +123,15 @@ export interface Live {
   last_run: LastRun | null; // frozen numbers of the last finished run, while traffic is off
   pipelines: PipelineStatus;
   serving: { status: 'WARMING' | 'READY' | 'ERROR'; at: number | null; error: string | null };
+  power?: PowerStatus; // absent when the app has no Lakebase endpoint configured
+}
+// Turn off pipelines also pauses Lakebase and the endpoint warm calls; Warm up wakes them.
+export interface PowerStatus {
+  paused: boolean;
+  lakebase: string | null;
+  disabled: boolean | null;
+  step: string | null;
+  error: string | null;
 }
 // The ingestion + Real-Time Mode pipelines behind the Live stream page. They stay off until Warm up.
 export type PipelinePhase = 'checking' | 'off' | 'starting' | 'ready' | 'stopping' | 'unknown';

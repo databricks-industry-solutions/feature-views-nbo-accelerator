@@ -22,6 +22,7 @@ export interface StreamDeps {
     Promise<{ clicks: Map<string, { event_ms: number; commit_ms: number }>; mobile: Map<string, { event_ms: number; commit_ms: number }> } | null>;
   produce?: (events: ClickEvent[]) => Promise<void>; // tests inject a fake Kafka
   warmupMs?: number;
+  paused?: () => boolean; // demo paused (power.ts): no keep-warm reads or warm tests, so the endpoint can scale to zero
 }
 
 // Streaming features one click updates. cust_mobile_cat_views_10m counts only non-web clicks (nb07).
@@ -475,7 +476,7 @@ async function keepWarm(): Promise<void> {
     lastWarmSend = now;
     return;
   }
-  if (now - lastVisit > KEEP_WARM_IDLE_MS) {
+  if (now - lastVisit > KEEP_WARM_IDLE_MS || d.paused?.()) {
     warmSince = 0;
     return;
   }
@@ -670,7 +671,7 @@ export function startStream(d: StreamDeps) {
   (function baselineLoop() {
     const visited = first || Date.now() - lastVisit < VISIT_WINDOW_MS;
     first = false;
-    const run = traffic || !visited ? Promise.resolve() : runBaseline(d);
+    const run = traffic || !visited || d.paused?.() ? Promise.resolve() : runBaseline(d);
     void run.finally(() => setTimeout(baselineLoop, baseline.error ? 60_000 : BASELINE_EVERY_MS));
   })();
   // Open the Kafka connection early so the first Start does not pay the TLS + IAM handshake.
