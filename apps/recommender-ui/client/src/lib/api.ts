@@ -135,13 +135,20 @@ export interface PowerStatus {
 }
 // The ingestion + Real-Time Mode pipelines behind the Live stream page. They stay off until Warm up.
 export type PipelinePhase = 'checking' | 'off' | 'starting' | 'ready' | 'stopping' | 'unknown';
+// Idle auto-off countdown; off_in_s is null while the demo would not turn off (pipelines off, traffic running, ...).
+export interface AutoOff {
+  idle_min: number;
+  turned_off_at: number | null;
+  off_in_s: number | null;
+}
+
 export interface PipelineStatus {
   phase: PipelinePhase;
   pipes: { id: string; label: string; role: 'ingestion' | 'rtm'; state: string; update: string | null }[];
   failed: string[];
   probe_ms: number | null;
   queued: boolean;
-  auto_off?: { idle_min: number; turned_off_at: number | null } | null;
+  auto_off?: AutoOff | null;
   error: string | null;
 }
 
@@ -225,6 +232,8 @@ export const api = {
   trafficStop: () => call<TrafficState>('/api/traffic', undefined, 'DELETE'),
   warmUp: () => call<PipelineStatus>('/api/pipelines', {}),
   turnOff: () => call<PipelineStatus>('/api/pipelines', undefined, 'DELETE'),
+  activity: () => call<AutoOff | null>('/api/activity', {}),
+  autoOff: () => call<AutoOff | null>('/api/auto-off'),
   // A poll that hangs would stop the Live stream loop, so each one gives up after 5 s and the next one runs.
   live: (cursor = 0) => call<Live>(`/api/live?cursor=${cursor}`, undefined, undefined, 5_000),
   metrics: () => call<Metrics>('/api/metrics'),

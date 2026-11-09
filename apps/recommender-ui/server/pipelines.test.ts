@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { phaseOf, pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp, watch, type Pipe } from './pipelines';
+import { describe, expect, it, vi } from 'vitest';
+import { autoOffStatus, phaseOf, pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp, watch, type Pipe } from './pipelines';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pipe = (id: string, role: Pipe['role'], state: string, update: string | null = null): Pipe => ({ id, label: id, role, state, update });
@@ -183,6 +183,33 @@ describe('live pipelines', () => {
     await warmUp(); // a new Warm up clears the note
     expect(pipelineStatus().auto_off?.turned_off_at).toBeNull();
     await turnOff();
+  });
+
+  it('auto-off countdown resets on activity and pauses while traffic runs', async () => {
+    await turnOff();
+    const ws = workspace();
+    let last = Date.now();
+    let traffic = false;
+    startPipelines({
+      api: ws.api, stream: 'c.s.stream', features: ['c.s.f1', 'c.s.f2'],
+      autoOff: { idleMs: 10 * 60_000, lastActivity: () => last, busy: () => traffic },
+    }, 0);
+    expect(autoOffStatus()?.off_in_s).toBeNull(); // pipelines not read yet / off
+    await warmUp();
+    const s1 = autoOffStatus()?.off_in_s ?? 0;
+    expect(s1).toBeGreaterThan(590);
+    expect(s1).toBeLessThanOrEqual(600);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 8 * 60_000); // 8 min with no activity
+    expect(autoOffStatus()?.off_in_s).toBeLessThanOrEqual(120);
+    traffic = true;
+    expect(autoOffStatus()?.off_in_s).toBeNull(); // never counts down during live traffic
+    traffic = false;
+    last = Date.now(); // heartbeat or Keep on
+    expect(autoOffStatus()?.off_in_s).toBeGreaterThan(590);
+    vi.useRealTimers();
+    await turnOff();
+    expect(autoOffStatus()?.off_in_s).toBeNull();
   });
 
   it('watchdog leaves a fresh Warm up alone', async () => {

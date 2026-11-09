@@ -3,7 +3,7 @@ import { metrics } from './realtime.js';
 import { sessionClicks, startClicks, trackClick } from './clicks.js';
 import { freshnessRows, pingLakebase, pipelineTimesError, startPipelineTimes, warmPipelineTimes, watchPipeline } from './pipelineTimes.js';
 import { cursorNow, freshPointsSince, lastRunSnapshot, lastVisitAt, latestFinished, pointsSince, probeFreshness, produceEvents, startStream, startTraffic, stats, stopTraffic, touch, trafficState, VISIT_WINDOW_MS } from './stream.js';
-import { pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp } from './pipelines.js';
+import { autoOffStatus, pipelinesRunning, pipelineStatus, startPipelines, turnOff, warmUp } from './pipelines.js';
 import { catchUpBatch, holdPaused, isPaused, pause, powerReady, powerStatus, resume, startPower } from './power.js';
 import { assertRecommendationGoal, constrainOffersForContext, constrainOffersForGoal } from '../shared/recommendation.js';
 
@@ -518,13 +518,23 @@ createApp({
       app.use('/api', (req, _res, next) => {
         const quiet = Date.now() - lastVisitAt() > VISIT_WINDOW_MS;
         touch();
-        // Only actions (Warm up, traffic, clicks, recommendations) count toward auto-off; open tabs poll with GET.
+        // Only actions count toward auto-off: Warm up, traffic, clicks, recommendations, and the browser's activity
+        // heartbeat (mouse, scroll, keys). Open tabs poll with GET, so an untouched tab still times out.
         if (req.method !== 'GET') lastActivityAt = Date.now();
         // Wake the endpoints on the page load itself, so the visitor's first recommendation does not wait for it.
         // Not while paused: then only Warm up wakes them.
         if (quiet && !isPaused()) void warmServing().catch(() => undefined);
         next();
       });
+      // Activity heartbeat: the browser sends one at most once a minute while someone moves the mouse, scrolls or types,
+      // and when Keep on is pressed. The /api middleware above records it.
+      app.post('/api/activity', (_req, res) => {
+        res.json(autoOffStatus());
+      });
+      app.get('/api/auto-off', (_req, res) => {
+        res.json(autoOffStatus());
+      });
+
       // Lightweight config for the UI header (catalog/schema the app is pointed at).
       app.get('/api/config', (_req, res) => {
         res.json({

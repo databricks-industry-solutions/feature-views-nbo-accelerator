@@ -27,7 +27,9 @@ export interface PipelineStatus {
   probe_ms: number | null; // last test event, while the running pipelines are still catching up
   queued: boolean; // Warm up was pressed while pipelines were still stopping; they start once stopped
   error: string | null;
-  auto_off: { idle_min: number; turned_off_at: number | null } | null; // null when auto-off is disabled
+  // null when auto-off is disabled. off_in_s: seconds until it turns the demo off, null while it would not (pipelines
+  // off, traffic running, Warm up or Turn off in progress).
+  auto_off: { idle_min: number; turned_off_at: number | null; off_in_s: number | null } | null;
 }
 
 const REFRESH_MS = 4_000;
@@ -152,7 +154,7 @@ export function pipelineStatus(): PipelineStatus {
     probe_ms: phase === 'starting' ? probeMs : null,
     queued,
     error: actionError ?? readError,
-    auto_off: deps?.autoOff ? { idle_min: Math.round(deps.autoOff.idleMs / 60_000), turned_off_at: autoOffAt } : null,
+    auto_off: autoOffStatus(),
   };
 }
 
@@ -249,6 +251,21 @@ export async function watch(): Promise<void> {
     refreshedAt = 0;
     await refresh();
   }
+}
+
+/** Auto-off countdown for the UI banner, from the last pipeline read (refreshed every few seconds). */
+export function autoOffStatus(): PipelineStatus['auto_off'] {
+  const a = deps?.autoOff;
+  if (!a) return null;
+  if (Date.now() - refreshedAt > REFRESH_MS) void refresh();
+  const running = pipes.some((p) => p.state === 'RUNNING' || STARTING.has(p.state));
+  const waiting = !running || preparing || queued || pauseWhenStopped || a.busy();
+  const left = a.idleMs - (Date.now() - Math.max(a.lastActivity(), requestedAt));
+  return {
+    idle_min: Math.round(a.idleMs / 60_000),
+    turned_off_at: autoOffAt,
+    off_in_s: waiting ? null : Math.max(0, Math.ceil(left / 1000)),
+  };
 }
 
 /** Turn the demo off when it has run idleMs with no user activity (Warm up counts as activity). */
