@@ -52,6 +52,9 @@ const LIVE_STREAM = process.env.LIVE_STREAM ?? 'session_events_stream';
 // Lakebase compute of the online store, for the pipeline's own timestamps on the Lakeshore Bank tab.
 const LAKEBASE_ENDPOINT = process.env.LAKEBASE_ENDPOINT ?? '';
 const PAUSED_ERROR = 'The demo is paused. Press Warm up pipelines on the Live stream tab, then try again.';
+// Turn the live demo off after this many minutes with no user action (0 = never). Polling does not count.
+const AUTO_OFF_IDLE_MIN = Number(process.env.AUTO_OFF_IDLE_MIN ?? 60);
+let lastActivityAt = Date.now(); // a restart mid-demo gets the full idle window
 const LIVE_FEATURES = (process.env.LIVE_FEATURES ?? 'cust_clicks_10m,cust_cat_views_10m,cust_mobile_cat_views_10m,cust_cat_views_30d')
   .split(',').map((f) => f.trim()).filter(Boolean);
 const CATEGORIES = ['credit_card', 'savings', 'personal_loan', 'mortgage', 'investment'];
@@ -512,9 +515,11 @@ createApp({
   async onPluginsReady(appkit) {
     appkit.server.extend((app) => {
       // Any browser request marks the app as in use, which keeps the live pipeline warm (stream.ts keepWarm).
-      app.use('/api', (_req, _res, next) => {
+      app.use('/api', (req, _res, next) => {
         const quiet = Date.now() - lastVisitAt() > VISIT_WINDOW_MS;
         touch();
+        // Only actions (Warm up, traffic, clicks, recommendations) count toward auto-off; open tabs poll with GET.
+        if (req.method !== 'GET') lastActivityAt = Date.now();
         // Wake the endpoints on the page load itself, so the visitor's first recommendation does not wait for it.
         // Not while paused: then only Warm up wakes them.
         if (quiet && !isPaused()) void warmServing().catch(() => undefined);
@@ -822,6 +827,14 @@ createApp({
           void warmServingRetry().catch((e) => console.warn('[warmup] endpoints did not warm:', String(e).slice(0, 200)));
         },
         whenStopped: pause,
+      } : {}),
+      ...(AUTO_OFF_IDLE_MIN > 0 ? {
+        autoOff: {
+          idleMs: AUTO_OFF_IDLE_MIN * 60_000,
+          lastActivity: () => lastActivityAt,
+          busy: () => trafficState().running,
+          before: () => { stopTraffic(); if (LAKEBASE_ENDPOINT) holdPaused(); },
+        },
       } : {}),
     });
 

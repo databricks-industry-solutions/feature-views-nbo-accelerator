@@ -15,6 +15,8 @@ resources:
           - { name: SCHEMA, value: '${var.schema}' }
           - { name: RANKER_ENDPOINT, value: '${var.ranker_realtime_endpoint}' }
           - { name: FEATURE_ENDPOINT, value: '${var.feature_serving_endpoint}' }
+          # Turn the live demo off after this many minutes with no user action (0 = never).
+          - { name: AUTO_OFF_IDLE_MIN, value: '60' }
           # Start live traffic: the app writes click events to this topic itself, authenticating to MSK with
           # IAM through the UC service credential. The app service principal needs ACCESS on that credential.
           - { name: KAFKA_CONNECTION, value: '${var.kafka_connection}' }

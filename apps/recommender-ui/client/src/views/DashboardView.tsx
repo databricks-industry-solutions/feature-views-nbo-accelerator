@@ -153,11 +153,16 @@ export function DashboardView() {
   const ready = phase === 'ready' || phase === 'unknown';
   const trafficOn = !!live?.traffic.running;
   const warmSecs = warmClickedAt && Date.now() - warmClickedAt < 600_000 ? Math.round((Date.now() - warmClickedAt) / 1000) : null;
+  const autoOff = pipes?.auto_off;
+  const autoOffNote = autoOff ? ` They turn off on their own after ${autoOff.idle_min} min with no activity.` : '';
+  const autoOffDone = autoOff?.turned_off_at
+    ? `Turned off automatically at ${new Date(autoOff.turned_off_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} after ${autoOff.idle_min} min with no activity. `
+    : '';
   const pipeNote = {
     checking: 'Checking the live pipelines…',
-    off: power?.paused
+    off: autoOffDone + (power?.paused
       ? 'Paused: the live pipelines, Lakebase and the serving endpoints are off to save cost. Step 1: warm up. Warming up takes about 3 minutes, or about 10 when the daily batch job has to catch up first.'
-      : 'Step 1: warm up the live pipelines. Warming up takes about 3 minutes. They stay off between demos to save cost.',
+      : 'Step 1: warm up the live pipelines. Warming up takes about 3 minutes. They stay off between demos to save cost.'),
     starting: pipes?.queued
       ? 'Waiting for the pipelines to finish shutting down, then warming up. This adds a few minutes.'
       : powerStep
@@ -170,7 +175,7 @@ export function DashboardView() {
       : 'Shutting down takes about 5 minutes: the pipelines stop, then Lakebase pauses and the serving endpoints scale to zero. Press Warm up to start again as soon as they stop.',
     ready: trafficOn
       ? 'Live pipelines running'
-      : 'Step 2: start live traffic. The pipelines stay on until you press Turn off pipelines.',
+      : `Step 2: start live traffic. The pipelines stay on until you press Turn off pipelines.${autoOffNote}`,
     unknown: 'Could not read the live pipelines',
   }[phase];
   const pipeError = pipes?.failed.length ? `Failed to start: ${pipes.failed.join(', ')}. Press Warm up to retry.` : pipes?.error ?? power?.error;

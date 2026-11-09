@@ -141,6 +141,7 @@ export interface PipelineStatus {
   failed: string[];
   probe_ms: number | null;
   queued: boolean;
+  auto_off?: { idle_min: number; turned_off_at: number | null } | null;
   error: string | null;
 }
 

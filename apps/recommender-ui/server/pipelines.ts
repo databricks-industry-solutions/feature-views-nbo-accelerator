@@ -14,6 +14,8 @@ export interface PipelineDeps {
   // it has to be up first. Turn off runs whenStopped once every pipeline has stopped.
   prepare?: () => Promise<void>;
   whenStopped?: () => Promise<void>;
+  // Turn off on its own after idleMs with no user activity, unless busy() (e.g. live traffic running).
+  autoOff?: { idleMs: number; lastActivity: () => number; busy: () => boolean; before?: () => void };
 }
 
 export type Phase = 'checking' | 'off' | 'starting' | 'ready' | 'stopping' | 'unknown';
@@ -25,6 +27,7 @@ export interface PipelineStatus {
   probe_ms: number | null; // last test event, while the running pipelines are still catching up
   queued: boolean; // Warm up was pressed while pipelines were still stopping; they start once stopped
   error: string | null;
+  auto_off: { idle_min: number; turned_off_at: number | null } | null; // null when auto-off is disabled
 }
 
 const REFRESH_MS = 4_000;
@@ -59,6 +62,7 @@ let preparing = false; // Warm up is waiting on prepare() before it starts the p
 let cancelWarm = false; // Turn off was pressed while Warm up was still preparing
 let pauseWhenStopped = false; // Turn off was pressed; run whenStopped once every pipeline is down
 let watchTimer: NodeJS.Timeout | null = null;
+let autoOffAt: number | null = null; // when the watchdog last turned the demo off for inactivity
 
 // One test event per call, run while someone is watching the status (the Live stream page polls it).
 function kickProbe(d: PipelineDeps) {
@@ -148,6 +152,7 @@ export function pipelineStatus(): PipelineStatus {
     probe_ms: phase === 'starting' ? probeMs : null,
     queued,
     error: actionError ?? readError,
+    auto_off: deps?.autoOff ? { idle_min: Math.round(deps.autoOff.idleMs / 60_000), turned_off_at: autoOffAt } : null,
   };
 }
 
@@ -173,6 +178,7 @@ async function startStopped(d: PipelineDeps) {
 export async function warmUp(): Promise<PipelineStatus> {
   actionError = null;
   pauseWhenStopped = false;
+  autoOffAt = null;
   refreshedAt = 0;
   await refresh();
   if (readError) throw new Error(readError);
@@ -231,6 +237,7 @@ export async function watch(): Promise<void> {
   await refresh();
   if (readError || !loaded) return;
   await afterStop(d);
+  if (await autoOff(d)) return;
   const rtmActive = pipes.some((p) => p.role === 'rtm' && ACTIVE.has(p.state));
   if (rtmActive || preparing || queued || Date.now() - requestedAt < WARM_GRACE_MS) return;
   const idleIngest = pipes.filter((p) => p.role === 'ingestion' && (p.state === 'RUNNING' || STARTING.has(p.state)));
@@ -242,6 +249,21 @@ export async function watch(): Promise<void> {
     refreshedAt = 0;
     await refresh();
   }
+}
+
+/** Turn the demo off when it has run idleMs with no user activity (Warm up counts as activity). */
+async function autoOff(d: PipelineDeps): Promise<boolean> {
+  const a = d.autoOff;
+  if (!a || preparing || queued || pauseWhenStopped || a.busy()) return false;
+  const running = pipes.filter((p) => p.state === 'RUNNING' || STARTING.has(p.state));
+  if (!running.length) return false;
+  const idle = Date.now() - Math.max(a.lastActivity(), requestedAt);
+  if (idle < a.idleMs) return false;
+  console.log(`[auto-off] no user activity for ${Math.round(idle / 60_000)} min: turning off ${running.length} pipeline(s)`);
+  a.before?.();
+  await turnOff();
+  autoOffAt = Date.now();
+  return true;
 }
 
 export function startPipelines(d: PipelineDeps, watchMs = WATCH_MS) {

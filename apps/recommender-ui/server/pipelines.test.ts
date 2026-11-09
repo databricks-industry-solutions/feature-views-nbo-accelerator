@@ -146,6 +146,45 @@ describe('live pipelines', () => {
     await turnOff();
   });
 
+  it('auto-off turns everything off after the idle window, unless traffic runs or someone acted', async () => {
+    await turnOff();
+    const ws = workspace();
+    let last = Date.now();
+    let traffic = false;
+    let stopped = 0;
+    let before = 0;
+    startPipelines({
+      api: ws.api, stream: 'c.s.stream', features: ['c.s.f1', 'c.s.f2'],
+      whenStopped: async () => { stopped += 1; },
+      autoOff: { idleMs: 50, lastActivity: () => last, busy: () => traffic, before: () => { before += 1; } },
+    }, 0);
+    await warmUp();
+    await watch();
+    expect(ws.state.rtm1.state).toBe('RUNNING'); // just warmed up
+
+    await sleep(80);
+    traffic = true;
+    await watch();
+    expect(ws.state.rtm1.state).toBe('RUNNING'); // live traffic keeps it on
+
+    traffic = false;
+    last = Date.now(); // a click or recommendation
+    await watch();
+    expect(ws.state.rtm1.state).toBe('RUNNING');
+
+    await sleep(80);
+    await watch();
+    expect(Object.values(ws.state).every((p) => p.state === 'IDLE')).toBe(true);
+    expect(before).toBe(1);
+    expect(stopped).toBe(1); // Lakebase pause and batch schedule pause run, as on Turn off
+    expect(pipelineStatus().auto_off).toMatchObject({ idle_min: 0 });
+    expect(pipelineStatus().auto_off?.turned_off_at).toBeGreaterThan(0);
+
+    await warmUp(); // a new Warm up clears the note
+    expect(pipelineStatus().auto_off?.turned_off_at).toBeNull();
+    await turnOff();
+  });
+
   it('watchdog leaves a fresh Warm up alone', async () => {
     await turnOff();
     const ws = workspace();
